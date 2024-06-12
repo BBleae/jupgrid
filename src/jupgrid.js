@@ -1299,7 +1299,7 @@ async function balanceCheck() {
 	  };
   
 	if (adjustmentA > 0) {
-		if (adjustmentA > currBalanceA) {
+		if (adjustmentA > currBalanceALamports) {
 			console.log(adjustmentA);
 			console.log(currBalanceALamports);
 			console.log(
@@ -1326,7 +1326,7 @@ Attempting to swap ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} 
 		return;
 	  }
 	} else if (adjustmentB > 0) {
-		if (adjustmentB > currBalanceB) {
+		if (adjustmentB > currBalanceBLamports) {
 			console.log(adjustmentB);
 			console.log(currBalanceBLamports);
 			console.log(
