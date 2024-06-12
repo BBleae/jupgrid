@@ -1250,7 +1250,8 @@ async function balanceCheck() {
 	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB;
 	tokenARebalanceValue = currentBalances.tokenARebalanceValue;
 	tokenBRebalanceValue = currentBalances.tokenBRebalanceValue;
-  
+	let currBalanceALamports = currBalanceA * Math.pow(10, selectedDecimalsA);
+	let currBalanceBLamports = currBalanceB * Math.pow(10, selectedDecimalsB);
 	if (currUsdTotalBalance < infinityTarget) {
 	  console.log(
 		`Your total balance is not high enough for your Token B Target Value. Please either increase your wallet balance or reduce your target.`
@@ -1299,9 +1300,11 @@ async function balanceCheck() {
   
 	if (adjustmentA > 0) {
 		if (adjustmentA > currBalanceA) {
+			console.log(adjustmentA);
+			console.log(currBalanceALamports);
 			console.log(
 				`You do not have enough ${selectedTokenA} to rebalance. There has been an error.
-${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)}`
+Attempting to swap ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)}`
 			);
 			process.exit(0);
 		}
@@ -1324,6 +1327,8 @@ ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(select
 	  }
 	} else if (adjustmentB > 0) {
 		if (adjustmentB > currBalanceB) {
+			console.log(adjustmentB);
+			console.log(currBalanceBLamports);
 			console.log(
 				`You do not have enough ${selectedTokenB} to rebalance. There has been an error.
 Attempting to swap ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to ${chalk.cyan(selectedTokenA)}`
