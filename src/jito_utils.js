@@ -40,9 +40,7 @@ export {
     jitoSetInfinity,
     jitoRebalance,
     handleJitoBundle,
-    sendJitoBundle,
-    buyOrderAddress,
-    sellOrderAddress
+    sendJitoBundle
 };
 
 const [MIN_WAIT, MAX_WAIT] = [5e2, 5e3];
@@ -218,8 +216,6 @@ async function jitoSetInfinity(task) {
 		);
 		const transaction1 = order1.transaction;
 		const transaction2 = order2.transaction;
-        console.log("Buy Order Address: ", order1.orderPubkey);
-        console.log("Sell Order Address: ", order2.orderPubkey);
 		const transactions = [transaction1, transaction2];
 		const result = await handleJitoBundle(task, ...transactions);
 		return result;
@@ -244,8 +240,6 @@ async function jitoSetInfinity(task) {
 		);
 		const transaction2 = order1.transaction;
 		const transaction3 = order2.transaction;
-        console.log("Buy Order Address: ", order1.orderPubkey);
-        console.log("Sell Order Address: ", order2.orderPubkey);
 		const transactions = [transaction1, transaction2, transaction3];
 		const result = await handleJitoBundle(task, ...transactions);
 		return result;

@@ -30,17 +30,41 @@ import {
 import logger from './logger.js';
 import {
     jitoController,
-	buyOrderAddress,
-	sellOrderAddress
 } from './jito_utils.js';
 import asciichart from 'asciichart'
 // #endregion
 
-const { Connection, Keypair, VersionedTransaction } = solanaWeb3;
+// #region exports
+export {
+	initialize,
+    checkOpenOrders,
+    cancelOrder,
+    createTx,
+    balanceCheck,
+    getBalance,
+	connection,
+	payer,
+    selectedAddressA,
+    selectedAddressB,
+    selectedTokenA,
+    selectedTokenB,
+    infinityBuyInputLamports,
+    infinityBuyOutputLamports,
+    infinitySellInputLamports,
+    infinitySellOutputLamports,
+	checkArray,
+	maxJitoTip
+};
+// #endregion
 
-const version = packageInfo.version;
+// #region constants
+// use fs to to read version from package.json
+const packageInfo = JSON.parse(fs.readFileSync("package.json", "utf8"));
 
-let [wallet, rpcUrl] = envload();
+let currentVersion = packageInfo.version;
+let configVersion = currentVersion;
+
+const [payer, rpcUrl] = envload();
 
 const connection = new Connection(rpcUrl, "processed", {
 	confirmTransactionInitialTimeout: 5000
@@ -70,6 +94,7 @@ console.log = function(message) {
   logger.info(message);
 };
 // #endregion
+
 
 // #region properties
 let {
@@ -1043,6 +1068,19 @@ async function createTx(inAmount, outAmount, inputMint, outputMint, base) {
 	while (attempt < maxRetries) {
 		attempt++;
 		try {
+			const tokenAccounts = await getTokenAccounts(
+				connection,
+				payer.publicKey,
+				new solanaWeb3.PublicKey(
+					"9tzZzEHsKnwFL1A3DyFJwj36KnZj3gZ7g4srWp9YTEoh"
+				)
+			);
+			if (tokenAccounts.value.length === 0) {
+				console.log(
+					"No ARB token accounts found. Please purchase at least 25k ARB and try again."
+				);
+				process.exit(0);
+			}
 
 			const response = await fetch(
 				"https://jup.ag/api/limit/v1/createOrder",
@@ -1057,10 +1095,11 @@ async function createTx(inAmount, outAmount, inputMint, outputMint, base) {
 						outputMint: outputMint.toString(),
 						expiredAt: null,
 						base: base.publicKey.toString(),
-						referralAccount: "7WGULgEo4Veqj6sCvA3VNxGgBf3EXJd8sW2XniBda3bJ",
-						referralName: "Jupiter GridBot",
-					}),
-				},
+						referralAccount:
+							"7WGULgEo4Veqj6sCvA3VNxGgBf3EXJd8sW2XniBda3bJ",
+						referralName: "Jupiter GridBot"
+					})
+				}
 			);
 
 			if (!response.ok) {
@@ -1075,35 +1114,7 @@ async function createTx(inAmount, outAmount, inputMint, outputMint, base) {
 			// Deserialize the raw transaction
 			const transactionBuf = Buffer.from(encodedTransaction, "base64");
 			const transaction = solanaWeb3.Transaction.from(transactionBuf);
-
-			// Set the recent block hash and fee payer
-			const { blockhash } =
-				await connection.getLatestBlockhash("processed");
-			transaction.recentBlockhash = blockhash;
-			transaction.feePayer = wallet.publicKey;
-			transaction.add(PRIORITY_FEE_IX);
-			transaction.add(CHECK_IX);
-			const signers = [wallet.payer, base];
-
-			// Send and confirm the transaction
-			const txid = await solanaWeb3.sendAndConfirmTransaction(
-				connection,
-				transaction,
-				signers,
-				{
-					commitment: "processed",
-					preflightCommitment: "processed",
-				},
-			);
-
-			//let txFee = await getTxFee(txid);
-			//console.log(txFee);
-
-			spinner.succeed(`Transaction confirmed with ID: ${txid}`);
-			console.log(`https://solscan.io/tx/${txid}`);
-			console.log("Order Successful");
-			await delay(2000);
-
+			transaction.sign(payer, base);
 			return {
 				transaction,
 				orderPubkey: responseData.orderPubkey
