@@ -1,16 +1,19 @@
+// #region imports
 import axios from 'axios';
 import chalk from 'chalk';
 import fetch from 'cross-fetch';
 import * as fs from 'fs';
-import ora from 'ora';
 
 import {
 	LimitOrderProvider,
 	ownerFilter
 } from '@jup-ag/limit-order-sdk';
 import * as solanaWeb3 from '@solana/web3.js';
+import {
+	Connection,
+	VersionedTransaction
+} from '@solana/web3.js';
 
-import packageInfo from '../package.json' assert { type: 'json' };
 import {
 	envload,
 	loaduserSettings,
@@ -43,14 +46,35 @@ const version = packageInfo.version;
 let [wallet, rpcUrl] = envload();
 
 const connection = new Connection(rpcUrl, "processed", {
-	confirmTransactionInitialTimeout: 5000,
+	confirmTransactionInitialTimeout: 5000
 });
 const limitOrder = new LimitOrderProvider(connection);
 
 let shutDown = false;
 
+const walletAddress = payer.publicKey.toString();
+const displayAddress = `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`;
+
 const quoteurl = "https://quote-api.jup.ag/v6/quote";
 
+
+const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112";
+
+// Save the original console.log function
+const originalConsoleLog = console.log;
+
+// Override console.log
+console.log = function(message) {
+  // Log the message to the console as usual
+  originalConsoleLog(message);
+
+  // Also log message to the file
+  logger.info(message);
+};
+// #endregion
+
+// #region properties
 let {
 	validTokenA = null,
 	validTokenB = null,
@@ -60,11 +84,8 @@ let {
 	selectedAddressB = null,
 	selectedDecimalsA = null,
 	selectedDecimalsB = null,
-	validTradeSize = false,
-	tradeSize = null,
-	tradeSizeInLamports = null,
 	validSpread = null,
-	stopLossUSD=  null,
+	stopLossUSD = null,
 	infinityTarget = null,
 	loaded = false,
 	openOrders = [],
@@ -74,79 +95,60 @@ let {
 	startPrice = null,
 	spread = null,
 	spreadbps = null,
-	priorityFee = null,
-	validPriorityFee = false,
-	buyInput = null,
-	buyOutput = null,
-	sellInput = null,
-	sellOutput = null,
-	recalcs = 0,
 	initBalanceA = 0,
 	initUsdBalanceA = 0,
 	initBalanceB = 0,
 	initUsdBalanceB = 0,
 	currBalanceA = 0,
 	currBalanceB = 0,
-	currCalcBalA = 0,
-	currCalcBalB = 0,
-	prevBalA = 0,
-	prevBalB = 0,
 	currUSDBalanceA = 0,
 	currUSDBalanceB = 0,
 	initUsdTotalBalance = 0,
 	currUsdTotalBalance = 0,
-	marketPercentageChange = 0,
-	balancePercentageChange = 0,
 	tokenRebalanceValue = null,
 	tokenARebalanceValue = 0,
 	tokenBRebalanceValue = 0,
-	rebalanceAllowed = null,
-	validRebalanceAllowed = false,
-	rebalanceSlippageBPS = 25,
-	validRebalanceSlippage = false,
-	rebalancePercentage = 0,
-	validRebalancePercentage = false,
-	validStopLossUSD = false,
-	validInfinityTarget = false,
 	startTime = new Date(),
-	profitA = null,
-	profitB = null,
-	profitSumA = 0,
-	profitSumB = 0,
-	buysFilled = 0,
-	sellsFilled = 0,
-	totalProfit = null,
 	monitorDelay = null,
-	buyKey = null,
-	sellKey = null,
-	txFeeBuy = 0,
-	txFeeSell = 0,
-	txFeeCancel = 0,
-	recoveredTransactionsCount = 0,
-	lastFilledOrder = null, // 'buy' or 'sell'
-	sortedLayers,
-	infinityMode = false,
 	adjustmentA = 0,
 	adjustmentB = 0,
+	stopLoss = false,
+	maxJitoTip = null,
+	infinityBuyInputLamports,
+	infinityBuyOutputLamports,
+	infinitySellInputLamports,
+	infinitySellOutputLamports,
+	counter = 0,
+	askForRebalance = true,
+	rebalanceCounter = 0,
+	newPriceBUp = null,
+	newPriceBDown = null,
+	lastKnownPrice = null,
+	currentTracker = null,
+	sellPrice = null,
+	buyPrice = null,
+	iteration = 0,
 	userSettings = {
 		selectedTokenA: null,
 		selectedTokenB: null,
 		tradeSize: null,
 		spread: null,
-		priorityFee: null,
 		rebalanceAllowed: null,
 		rebalancePercentage: null,
 		rebalanceSlippageBPS: null,
 		monitorDelay: null,
 		stopLossUSD: null,
 		infinityTarget: null,
-	},
+		infinityMode: null
+	}
 } = {};
+// #endregion
 
 async function loadQuestion() {
 	try {
 		await downloadTokensList();
 		console.log("Updated Token List\n");
+		console.log(`Connected Wallet: ${displayAddress}\n`);
 
 		if (!fs.existsSync("userSettings.json")) {
 			console.log("No user data found. Starting with fresh inputs.");
@@ -162,40 +164,27 @@ async function loadQuestion() {
 							try {
 								// Show user data
 								const userSettings = loaduserSettings();
+								// Check if the saved version matches the current version
+									if (userSettings.configVersion !== currentVersion) {
+										console.log(`Version mismatch detected. Your settings version: ${userSettings.configVersion}, current version: ${currentVersion}.`);
+										// Here you can choose to automatically initialize with fresh settings
+										// or prompt the user for an action (e.g., update settings, discard, etc.)
+										console.log("Changing to blank settings, please continue.\n");
+										initialize(); // Example action: re-initialize with fresh settings
+										return;
+									}
 								console.log("User data loaded successfully.");
 								console.log(
-									`Token A: ${userSettings.selectedTokenA}`,
+									`\nPrevious JupGrid Settings:
+Version: ${userSettings.configVersion}
+Token A: ${chalk.cyan(userSettings.selectedTokenA)}
+Token B: ${chalk.magenta(userSettings.selectedTokenB)}
+Token B Target Value: ${userSettings.infinityTarget}
+Spread: ${userSettings.spread}%
+Stop Loss: ${userSettings.stopLossUSD}
+Maximum Jito Tip: ${userSettings.maxJitoTip} SOL
+Monitoring delay: ${userSettings.monitorDelay}ms\n`
 								);
-								console.log(
-									`Token B: ${userSettings.selectedTokenB}`,
-								);
-								console.log(
-									`Order Size (in ${userSettings.selectedTokenA}): ${userSettings.tradeSize}`,
-								);
-								console.log(
-									`Spread: ${userSettings.spread}`
-								);
-								console.log(
-									`Priority Fee: ${userSettings.priorityFee}`
-								);
-								//console.log(
-								//	`Stop Loss: ${userSettings.stopLossUSD}`
-								//);
-								console.log(
-									`Monitoring delay: ${userSettings.monitorDelay}ms`,
-								);
-								console.log(
-									`Rebalancing is ${userSettings.rebalanceAllowed ? "enabled" : "disabled"}`,
-								);
-								if (userSettings.rebalanceAllowed) {
-									console.log(
-										`Rebalance Threshold: ${userSettings.rebalancePercentage}%`,
-									);
-									console.log(
-										`Rebalance Swap Slippage: ${userSettings.rebalanceSlippageBPS / 100}%`,
-									);
-								}								
-
 								// Prompt for confirmation to use these settings
 								rl.question(
 									"Proceed with these settings? (Y/N): ",
@@ -205,43 +194,39 @@ async function loadQuestion() {
 										if (confirmResponse === "Y") {
 											// Apply loaded settings
 											({
+												currentVersion,
 												selectedTokenA,
 												selectedAddressA,
 												selectedDecimalsA,
 												selectedTokenB,
 												selectedAddressB,
 												selectedDecimalsB,
-												tradeSize,
 												spread,
-												priorityFee,
-												rebalanceAllowed,
-												rebalancePercentage,
-												rebalanceSlippageBPS,
 												monitorDelay,
 												stopLossUSD,
-												infinityTarget,
+												maxJitoTip,
+												infinityTarget
 											} = userSettings);
 											console.log(
-												"Settings applied successfully!",
+												"Settings applied successfully!"
 											);
 											initialize();
 										} else if (confirmResponse === "N") {
 											console.log(
-												"Discarding saved settings, please continue.",
+												"Discarding saved settings, please continue."
 											);
 											initialize(); // Start initialization with blank settings
 										} else {
 											console.log(
-												"Invalid response. Please type 'Y' or 'N'.",
+												"Invalid response. Please type 'Y' or 'N'."
 											);
 											askForLoadSettings(); // Re-ask the original question
 										}
-									},
+									}
 								);
 							} catch (error) {
 								console.error(
-									"Failed to load settings:",
-									error,
+									`Failed to load settings: ${error}`
 								);
 								initialize(); // Proceed with initialization in case of error
 							}
@@ -250,11 +235,11 @@ async function loadQuestion() {
 							initialize();
 						} else {
 							console.log(
-								"Invalid response. Please type 'Y' or 'N'.",
+								"Invalid response. Please type 'Y' or 'N'."
 							);
 							askForLoadSettings(); // Re-ask if the response is not Y/N
 						}
-					},
+					}
 				);
 			};
 
@@ -266,540 +251,308 @@ async function loadQuestion() {
 }
 
 async function initialize() {
-	try {
-		if (selectedTokenA != null) {
-			validTokenA = true;
-		}
-		if (selectedTokenB != null) {
+	tokens = await getTokens();
+	
+	if (selectedTokenA != null) {
+		validTokenA = true;
+	}
+
+	if (selectedTokenB != null) {
+		validTokenB = true;
+	}
+
+	if (spread != null) {
+		validSpread = true;
+	}
+
+	let validMonitorDelay = false;
+	if (monitorDelay >= 1000) {
+		validMonitorDelay = true;
+	}
+
+	let validStopLossUSD = false;
+	if (stopLossUSD != null) {
+		validStopLossUSD = true;
+	}
+
+	let validJitoMaxTip = false;
+	if (maxJitoTip != null) {
+		validJitoMaxTip = true;
+	}
+
+	let validInfinityTarget = false;
+	if (infinityTarget != null) {
+		validInfinityTarget = true;
+	}
+
+	if (userSettings.selectedTokenA) {
+  	const tokenAExists = tokens.some(
+    (token) => token.symbol === userSettings.selectedTokenA
+  	);
+  	if (!tokenAExists) {
+    console.log(
+      `Token ${userSettings.selectedTokenA} from user data not found in the updated token list. Please re-enter.`
+    );
+    userSettings.selectedTokenA = null; // Reset selected token A
+    userSettings.selectedAddressA = null; // Reset selected address
+    userSettings.selectedDecimalsA = null; // Reset selected token decimals
+  } else {
+    validTokenA = true;
+  }
+	}
+
+	while (!validTokenA) {
+	console.log("\nDuring this Beta stage, we are only allowing USDC as Token A. Is that ok?");
+	// Simulate the user entered 'USDC' as their answer
+	let answer = 'USDC';
+
+  const token = tokens.find((t) => t.symbol === answer);
+  if (token) {
+    console.log(`Selected Token: ${token.symbol}
+Token Address: ${token.address}
+Token Decimals: ${token.decimals}`);
+    const confirmAnswer = await questionAsync(
+      `Is this the correct token? (Y/N): `
+    );
+    if (
+      confirmAnswer.toLowerCase() === "y" ||
+      confirmAnswer.toLowerCase() === "yes"
+    ) {
+      validTokenA = true;
+      selectedTokenA = token.symbol;
+      selectedAddressA = token.address;
+      selectedDecimalsA = token.decimals;
+    }
+  } else { 
+    console.log(`Token ${answer} not found. Please Try Again.`);
+  }
+	}
+
+	if (userSettings.selectedTokenB) {
+		const tokenBExists = tokens.some(
+			(token) => token.symbol === userSettings.selectedTokenB
+		);
+		if (!tokenBExists) {
+			console.log(
+				`Token ${userSettings.selectedTokenB} from user data not found in the updated token list. Please re-enter.`
+			);
+			userSettings.selectedTokenB = null; // Reset selected token B
+			userSettings.selectedAddressB = null; // Reset selected address
+			userSettings.selectedDecimalsB = null; // Reset selected token decimals
+		} else {
 			validTokenB = true;
 		}
-		if (tradeSize != null) {
-			validTradeSize = true;
-		}
-		if (spread != null) {
-			validSpread = true;
-		}
-		if (priorityFee != null) {
-			validPriorityFee = true;
-		}
-		if (rebalanceAllowed != null) {
-			validRebalanceAllowed = true;
-		}
-		if (
-			rebalancePercentage != null &&
-			rebalancePercentage > 0 &&
-			rebalancePercentage <= 10000
-		) {
-			validRebalancePercentage = true;
-		}
-		if (
-			rebalanceSlippageBPS != null &&
-			rebalanceSlippageBPS >= 0.1 &&
-			rebalanceSlippageBPS <= 100
-		) {
-			validRebalanceSlippage = true;
-		}
-		let validMonitorDelay = false;
-		if (monitorDelay >= 5000) {
-			validMonitorDelay = true;
-		}
-		let validStopLossUSD = false;
-		if (stopLossUSD != null) {
-			validStopLossUSD = true;
-		}
-		let validInfinityTarget = false;
-		if (infinityTarget != null) {
-			validInfinityTarget = true;
-		}
+	}
 
-		tokens = await getTokens();
-
-		if (userSettings.selectedTokenA) {
-			const tokenAExists = tokens.some(
-				(token) => token.symbol === userSettings.selectedTokenA,
-			);
-			if (!tokenAExists) {
-				console.log(
-					`Token ${userSettings.selectedTokenA} from user data not found in the updated token list. Please re-enter.`,
-				);
-				userSettings.selectedTokenA = null; // Reset selected token A
-				userSettings.selectedAddressA = null; // Reset selected address
-				userSettings.selectedDecimalsA = null; // Reset selected token decimals
-			} else {
-				validTokenA = true;
-			}
-		}
-
-		while (!validTokenA) {
-			const answer = await questionAsync(
-				`Please Enter The First Token Symbol (A) (Case Sensitive): `,
-			);
-			const token = tokens.find((t) => t.symbol === answer);
-			if (token) {
-				console.log(`Selected Token: ${token.symbol}`);
-				console.log(`Token Address: ${token.address}`);
-				console.log(`Token Decimals: ${token.decimals}`);
-				console.log("");
-				const confirmAnswer = await questionAsync(
-					`Is this the correct token? (Y/N): `,
-				);
-				if (
-					confirmAnswer.toLowerCase() === "y" ||
-					confirmAnswer.toLowerCase() === "yes"
-				) {
-					validTokenA = true;
-					selectedTokenA = token.symbol;
-					selectedAddressA = token.address;
-					selectedDecimalsA = token.decimals;
-				}
-				//let tokenALamports = Math.pow(10, selectedDecimalsA);
-			} else {
-				console.log(`Token ${answer} not found. Please Try Again.`);
-			}
-		}
-
-		if (userSettings.selectedTokenB) {
-			const tokenBExists = tokens.some(
-				(token) => token.symbol === userSettings.selectedTokenB,
-			);
-			if (!tokenBExists) {
-				console.log(
-					`Token ${userSettings.selectedTokenB} from user data not found in the updated token list. Please re-enter.`,
-				);
-				userSettings.selectedTokenB = null; // Reset selected token B
-				userSettings.selectedAddressB = null; // Reset selected address
-				userSettings.selectedDecimalsB = null; // Reset selected token decimals
-			} else {
-				validTokenB = true;
-			}
-		}
-
-		while (!validTokenB) {
-			const answer = await questionAsync(
-				`Please Enter The Second Token Symbol (B) (Case Sensitive): `,
-			);
-			const token = tokens.find((t) => t.symbol === answer);
-			if (token) {
-				console.log(`Selected Token: ${token.symbol}`);
-				console.log(`Token Address: ${token.address}`);
-				console.log(`Token Decimals: ${token.decimals}`);
-				console.log("");
-				const confirmAnswer = await questionAsync(
-					`Is this the correct token? (Y/N): `,
-				);
-				if (
-					confirmAnswer.toLowerCase() === "y" ||
-					confirmAnswer.toLowerCase() === "yes"
-				) {
-					validTokenB = true;
-					selectedTokenB = token.symbol;
-					selectedAddressB = token.address;
-					selectedDecimalsB = token.decimals;
-				}
-				//let tokenBLamports = Math.pow(10, selectedDecimalsB);
-			} else {
-				console.log(`Token ${answer} not found. Please Try Again.`);
-			}
-		}
-		const selectedTradeToken = "a";
-
-		// Check if trade size is valid
-		if (userSettings.tradeSize) {
-			validTradeSize = !isNaN(parseFloat(userSettings.tradeSize));
-			if (!validTradeSize) {
-				console.log(
-					"Invalid trade size found in user data. Please re-enter.",
-				);
-				userSettings.tradeSize = null; // Reset trade size
-			} else validTradeSize = true;
-		}
-
-		// If trade size is not valid, prompt the user
-		while (!validTradeSize) {
-			const tradeSizeInput = await questionAsync(
-				`Please Enter the Trade Size: `,
-			);
-			tradeSize = parseFloat(tradeSizeInput);
-			if (!isNaN(tradeSize)) {
-				userSettings.tradeSize = tradeSize;
-				validTradeSize = true;
-			} else {
-				console.log("Invalid trade size. Please enter a valid number.");
-			}
-		}
-
-		// Ask user for spread %
-		// Check if spread percentage is valid
-		if (userSettings.spread) {
-			validSpread = !isNaN(parseFloat(userSettings.spread));
-			if (!validSpread) {
-				console.log(
-					"Invalid spread percentage found in user data. Please re-enter.",
-				);
-				userSettings.spread = null; // Reset spread percentage
-			} else validSpread = true;
-		}
-
-		// If spread percentage is not valid, prompt the user
-		while (!validSpread) {
-			const spreadInput = await questionAsync(
-				"What % Spread Difference Between Market and Orders? Recommend >0.3% to cover Jupiter Fees:",
-			);
-			spread = parseFloat(spreadInput);
-			if (!isNaN(spread)) {
-				userSettings.spread = spread;
-				validSpread = true;
-			} else {
-				console.log(
-					"Invalid spread percentage. Please enter a valid number (No % Symbol).",
-				);
-			}
-		}
-
-		if (userSettings.priorityFee) {
-			priorityFee = !isNaN(parseFloat(userSettings.priorityFee));
-			if (!validPriorityFee) {
-				console.log(
-					"Invalid priority fee found in user data. Please re-enter.",
-				);
-				userSettings.priorityFee = null; // Reset spread percentage
-			} else validPriorityFee = true;
-		}
-
-		// If spread percentage is not valid, prompt the user
-		while (!validPriorityFee) {
-			const priorityFeeInput = await questionAsync(
-				"What Priority Fee do you want to use? (Micro Lamports - 1000 = 0.000001000 SOL: ",
-			);
-			priorityFee = parseFloat(priorityFeeInput);
-			if (!isNaN(priorityFee)) {
-				userSettings.priorityFee = priorityFee;
-				validPriorityFee = true;
-			} else {
-				console.log(
-					"Invalid Priority Fee. Please enter a valid number.",
-				);
-			}
-		}
-
-		/*
-		if (userSettings.stopLossUSD) {
-			validStopLossUSD = !isNaN(parseFloat(userSettings.stopLossUSD));
-			if (!validStopLossUSD) {
-				console.log(
-					"Invalid stop loss value found in user data. Please re-enter.",
-				);
-				userSettings.stopLossUSD = null; // Reset stop loss value
-			} else validStopLossUSD = true;
-		}
-		
-		
-		// If stop loss value is not valid, prompt the user
-		while (!validStopLossUSD) {
-			const stopLossUSDInput = await questionAsync(
-				`Please Enter the Stop Loss Value in USD: `,
-			);
-			stopLossUSD = parseFloat(stopLossUSDInput);
-			if (!isNaN(stopLossUSD)) {
-				userSettings.stopLossUSD = stopLossUSD;
-				validStopLossUSD = true;
-			} else {
-				console.log("Invalid stop loss value. Please enter a valid number.");
-			}
-		}
-		
-		
-		// Ask the user if they want to enable Infinity Mode
-		const infinityModeInput = await questionAsync(
-			`Would you like Infinity Mode? (Y/N): `,
+	while (!validTokenB) {
+		const answer = await questionAsync(
+			`\nPlease Enter The Second Token Symbol (B) (Case Sensitive): `
 		);
-		infinityMode = infinityModeInput.toLowerCase() === 'y';
-
-		if (infinityMode) {
-			if (userSettings.infinityTarget) {
-				validInfinityTarget = !isNaN(parseFloat(userSettings.infinityTarget));
-				if (!validInfinityTarget) {
-					console.log(
-						"Invalid infinity target value found in user data. Please re-enter.",
-					);
-					userSettings.infinityTarget = null; // Reset infinity target value
-				} else validInfinityTarget = true;
-			}
-
-			// If infinity target value is not valid, prompt the user
-			while (!validInfinityTarget) {
-				const infinityTargetInput = await questionAsync(
-					`Please Enter the Infinity Target Value: `,
-				);
-				infinityTarget = Math.floor(parseFloat(infinityTargetInput));
-				if (!isNaN(infinityTarget) && Number.isInteger(infinityTarget) && infinityTarget > userSettings.stopLossUSD) {
-					userSettings.infinityTarget = infinityTarget;
-					validInfinityTarget = true;
-				} else {
-					console.log("Invalid infinity target value. Please enter a valid integer that is larger than the stop loss value.");
-				}
-			}
-		}
-		*/
-		while (rebalanceAllowed === null) {
-			const rebalanceQuestion = await questionAsync(
-				"Do you want to allow rebalancing of Tokens (Currently Experimental)? (Y/N): ",
+		const token = tokens.find((t) => t.symbol === answer);
+		if (token) {
+			console.log(`Selected Token: ${token.symbol}
+Token Address: ${token.address}
+Token Decimals: ${token.decimals}`);
+			const confirmAnswer = await questionAsync(
+				`Is this the correct token? (Y/N): `
 			);
+			if (
+				confirmAnswer.toLowerCase() === "y" ||
+				confirmAnswer.toLowerCase() === "yes"
+			) {
+				validTokenB = true;
+				selectedTokenB = token.symbol;
+				selectedAddressB = token.address;
+				selectedDecimalsB = token.decimals;
+			}
+		} else {
+			console.log(`Token ${answer} not found. Please Try Again.`);
+		}
+	}
 
-			if (rebalanceQuestion.trim().toUpperCase() === "Y") {
-				rebalanceAllowed = true;
+	// If infinity target value is not valid, prompt the user
+	while (!validInfinityTarget) {
+		const infinityTargetInput = await questionAsync(
+			`\nPlease Enter the Token B Target Value (in USD): `
+		);
+		infinityTarget = Math.floor(parseFloat(infinityTargetInput));
+		if (
+			!isNaN(infinityTarget) &&
+			Number.isInteger(infinityTarget) &&
+			infinityTarget > userSettings.stopLossUSD
+		) {
+			userSettings.infinityTarget = infinityTarget;
+			validInfinityTarget = true;
+		} else {
+			console.log(
+				"Invalid Token B Target value. Please enter a valid integer that is larger than the stop loss value."
+			);
+		}
+	}
 
-				const percentageQuestion = await questionAsync(
-					"At what balance percentage do you want to rebalance your lower balance token? (Enter a number between 1 and 100): ",
-				);
-				const parsedPercentage = parseFloat(percentageQuestion.trim());
-				if (
-					!isNaN(parsedPercentage) &&
-					parsedPercentage > 0 &&
-					parsedPercentage <= 100
-				) {
-					rebalancePercentage = parsedPercentage;
-				} else {
-					console.log(
-						"Invalid percentage. Please enter a number between 1 and 100.",
-					);
-					continue; // Ask the rebalance percentage question again
-				}
+	// Ask user for spread %
+	// Check if spread percentage is valid
+	if (userSettings.spread) {
+		validSpread = !isNaN(parseFloat(userSettings.spread));
+		if (!validSpread) {
+			console.log(
+				"Invalid spread percentage found in user data. Please re-enter."
+			);
+			userSettings.spread = null; // Reset spread percentage
+		} else validSpread = true;
+	}
 
-				// Loop for maximum allowed slippage question until a valid answer is given or default is accepted
-				let isValidSlippage = false;
-				while (!isValidSlippage) {
-					const slippageQuestion = await questionAsync(
-						`What is the maximum allowed slippage for the rebalance transaction? (Enter a number between 0.1 and 100, representing percentage, default 0.3%): `,
-					);
+	// If spread percentage is not valid, prompt the user
+	while (!validSpread) {
+		const spreadInput = await questionAsync(
+			`\nWhat % Spread Difference Between Market and Orders?
+Recommend >0.3% to cover Jupiter Fees, but 1% or greater for best performance:`
+		);
+		spread = parseFloat(spreadInput);
+		if (!isNaN(spread)) {
+			userSettings.spread = spread;
+			validSpread = true;
+		} else {
+			console.log(
+				"Invalid spread percentage. Please enter a valid number (No % Symbol)."
+			);
+		}
+	}
 
-					let parsedSlippage;
-					if (slippageQuestion.trim() === "") {
-						// User accepted the default value
-						parsedSlippage = 0.3;
-						isValidSlippage = true;
-					} else {
-						// User entered a value, attempt to parse it
-						parsedSlippage = parseFloat(slippageQuestion.trim());
-						if (
-							!isNaN(parsedSlippage) &&
-							parsedSlippage >= 0.1 &&
-							parsedSlippage <= 100
-						) {
-							// Valid slippage value entered
-							isValidSlippage = true;
-						} else {
-							console.log(
-								"Invalid slippage value. Please enter a number between 0.1 and 100, or press Enter to accept the default value.",
-							);
-						}
-					}
+	if (userSettings.stopLossUSD) {
+		validStopLossUSD = !isNaN(parseFloat(userSettings.stopLossUSD));
+		if (!validStopLossUSD) {
+			console.log(
+				"Invalid stop loss value found in user data. Please re-enter."
+			);
+			userSettings.stopLossUSD = null; // Reset stop loss value
+		} else validStopLossUSD = true;
+	}
 
-					if (isValidSlippage) {
-						rebalanceSlippageBPS = parsedSlippage * 100;
-					}
-				}
-			} else if (rebalanceQuestion.trim().toUpperCase() === "N") {
-				rebalanceAllowed = false;
-				break; // Exit the loop if rebalancing is not allowed
+	// If stop loss value is not valid, prompt the user
+	while (!validStopLossUSD) {
+		const stopLossUSDInput = await questionAsync(
+			`\nPlease Enter the Stop Loss Value in USD: 
+(Enter 0 for no stoploss) `
+		);
+		stopLossUSD = parseFloat(stopLossUSDInput);
+		if (!isNaN(stopLossUSD)) {
+			userSettings.stopLossUSD = stopLossUSD;
+			validStopLossUSD = true;
+		} else {
+			console.log(
+				"Invalid stop loss value. Please enter a valid number."
+			);
+		}
+	}
+
+	while (!validJitoMaxTip) {
+		const maxJitoTipQuestion = await questionAsync(
+			`\nEnter the maximum Jito tip in SOL
+This is the maximum tip you are willing to pay for a Jito order,
+However, we use a dynamic tip based on the last 30 minute average tip.
+(Default 0.0002 SOL, Minimum 0.00001): `
+		);
+		// Check if input is empty and set default value
+		if (maxJitoTipQuestion.trim() === '') {
+			maxJitoTip = 0.0002;
+			validJitoMaxTip = true;
+		} else {
+			const parsedMaxJitoTip = parseFloat(maxJitoTipQuestion.trim());
+			if (!isNaN(parsedMaxJitoTip) && parsedMaxJitoTip >= 0.00001) {
+				maxJitoTip = parsedMaxJitoTip;
+				validJitoMaxTip = true;
 			} else {
 				console.log(
-					"Invalid input. Please enter 'Y' for Yes or 'N' for No.",
+					"Invalid Jito tip. Please enter a valid number greater than or equal to 0.00001."
 				);
-				// Loop will continue asking the rebalance permission question
 			}
 		}
+	
+	}
 
-		// ask for monitor delay
-		while (!validMonitorDelay) {
-			const monitorDelayQuestion = await questionAsync(
-				`Enter the delay between price checks in milliseconds (minimum 5000ms): `,
-			);
+	while (!validMonitorDelay) {
+		const monitorDelayQuestion = await questionAsync(
+			`\nEnter the delay between price checks in milliseconds.
+(minimum 100ms, recommended/default > 5000ms): `
+		);
+		// Check if input is empty and set default value
+		if (monitorDelayQuestion.trim() === '') {
+			monitorDelay = 5000;
+			validMonitorDelay = true;
+		} else {
 			const parsedMonitorDelay = parseInt(monitorDelayQuestion.trim());
-			if (!isNaN(parsedMonitorDelay) && parsedMonitorDelay >= 5000) {
+			if (!isNaN(parsedMonitorDelay) && parsedMonitorDelay >= 100) {
 				monitorDelay = parsedMonitorDelay;
 				validMonitorDelay = true;
 			} else {
 				console.log(
-					"Invalid monitor delay. Please enter a valid number greater than or equal to 5000.",
+					"Invalid monitor delay. Please enter a valid number greater than or equal to 1000."
 				);
 			}
 		}
-
-		spreadbps = spread * 100;
-		// Calculate trade size in lamports based on the token
-		if (selectedTradeToken.toLowerCase() === "a") {
-			tradeSizeInLamports = tradeSize * Math.pow(10, selectedDecimalsA);
-
-			console.log(
-				`Your Token Selection for A - Symbol: ${selectedTokenA}, Address: ${selectedAddressA}`,
-			);
-			console.log(
-				`Your Token Selection for B - Symbol: ${selectedTokenB}, Address: ${selectedAddressB}`,
-			);
-			console.log(
-				`Order Size for Token A: ${tradeSize} ${selectedTokenA}`,
-			);
-			console.log(`Order Spread Percentage: ${spread}`);
-		}
-		rl.close(); // Close the readline interface after question loops are done.
-
-		//First Price check during init
-		try {
-			const queryParams = {
-				inputMint: selectedAddressA,
-				outputMint: selectedAddressB,
-				amount: tradeSizeInLamports,
-				slippageBps: 0,
-			};
-			const response = await axios.get(quoteurl, { params: queryParams });
-			//console.log(`Response for ${selectedTokenA} vs ${selectedTokenB}:`, response.data);
-
-			newPrice = response.data.outAmount;
-			startPrice = response.data.outAmount;
-			const layers = generatePriceLayers(startPrice, spreadbps, 500)
-			//Calc first price layers
-			buyInput = tradeSizeInLamports;
-
-			sellInput = layers[1];
-			buyOutput = layers[-1];
-
-			//Get Lamports for Sell Output
-			sellOutput = tradeSizeInLamports;
-
-			saveuserSettings(
-				selectedTokenA,
-				selectedAddressA,
-				selectedDecimalsA,
-				selectedTokenB,
-				selectedAddressB,
-				selectedDecimalsB,
-				tradeSize,
-				spread,
-				priorityFee,
-				rebalanceAllowed,
-				rebalancePercentage,
-				rebalanceSlippageBPS,
-				monitorDelay,
-				stopLossUSD,
-				infinityTarget,
-			);
-			console.clear();
-			console.log(`\n\u{1F680} Starting Jupgrid! Version ${version}`);
-
-			//if (!infinityMode) {
-			//	console.log("Starting Grid Mode");
-			startGrid();
-			//} else {
-				//console.log("Infinity Mode is currently disabled. Please check back later.")
-				//process.exit(0);
-				
-			//	console.log("Starting Infinity Mode");
-			//	startInfinity();
-			//}
-
-		} catch (error) {
-			console.error("Error: Connection or Token Data Error");
-			console.error("Error:", error);
-			return null; // Return null on error
-		}
-	} catch (error) {
-		console.error(error);
 	}
+
+	spreadbps = spread * 100;
+	//rl.close(); // Close the readline interface after question loops are done.
+
+	saveuserSettings(
+		configVersion,
+		selectedTokenA,
+		selectedAddressA,
+		selectedDecimalsA,
+		selectedTokenB,
+		selectedAddressB,
+		selectedDecimalsB,
+		spread,
+		monitorDelay,
+		stopLossUSD,
+		maxJitoTip,
+		infinityTarget
+	);
+	// First Price check during init
+	console.log("Getting Latest Price Data...");
+	newPrice = await fetchPrice(selectedAddressB);
+	startPrice = newPrice;
+
+	console.clear();
+	console.log(`Starting JupGrid v${packageInfo.version};
+Your Token Selection for A - Symbol: ${chalk.cyan(selectedTokenA)}, Address: ${chalk.cyan(selectedAddressA)}
+Your Token Selection for B - Symbol: ${chalk.magenta(selectedTokenB)}, Address: ${chalk.magenta(selectedAddressB)}`);
+	startInfinity();
 }
 
 if (loaded === false) {
 	loadQuestion();
 }
 
-async function startGrid () {
-	let initialBalances = await getBalance(
-		wallet,
+async function startInfinity() {
+	console.log(`Checking for existing orders to cancel...`);
+	await jitoController("cancel");
+	const initialBalances = await getBalance(
+		payer,
 		selectedAddressA,
 		selectedAddressB,
 		selectedTokenA,
-		selectedTokenB,
+		selectedTokenB
 	);
 	initBalanceA = initialBalances.balanceA;
 	initUsdBalanceA = initialBalances.usdBalanceA;
 	initBalanceB = initialBalances.balanceB;
 	initUsdBalanceB = initialBalances.usdBalanceB;
 	initUsdTotalBalance = initUsdBalanceA + initUsdBalanceB;
-
-	let currentBalances = await getBalance(
-		wallet,
-		selectedAddressA,
-		selectedAddressB,
-		selectedTokenA,
-		selectedTokenB,
-	);
-	currBalanceA = currentBalances.balanceA;
-	currBalanceB = currentBalances.balanceB;
-	currUSDBalanceA = currentBalances.usdBalanceA;
-	currUSDBalanceB = currentBalances.usdBalanceB;
-	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB;
-
-	console.log(
-		`${chalk.cyan(selectedTokenA)} Balance: ${chalk.cyan(initBalanceA)}, worth $${chalk.cyan(initUsdBalanceA.toFixed(2))}`,
-		`\n${chalk.magenta(selectedTokenB)} Balance: ${chalk.magenta(initBalanceB)}, worth $${chalk.magenta(initUsdBalanceB.toFixed(2))}`,
-		`\nTotal User Balance: $${initUsdTotalBalance.toFixed(2)}`,
-	);
-	setOrders(tradeSizeInLamports);
-}
-
-async function startInfinity() {
-	//Balance check and rebalance to start
-	//await balanceCheck();
 	infinityGrid();
 }
 
-function generatePriceLayers(newPrice, spreadbps, totalLayers) {
-    const layers = {};
-    const adjustment = newPrice * spreadbps / 10000; // Fixed adjustment value
-
-    for (let i = 1; i <= totalLayers; i++) {
-        const upperLayerPrice = Math.trunc(Number(newPrice) - adjustment * i);
-        const lowerLayerPrice = Math.trunc(Number(newPrice) + adjustment * i);
-
-        // Only add the layer if the price is not negative
-        if (upperLayerPrice >= 0) {
-            layers[i] = upperLayerPrice;
-        }
-        if (lowerLayerPrice >= 0) {
-            layers[-i] = lowerLayerPrice;
-        }
-    }
-    layers[0] = Number(newPrice);
-
-    // Convert the layers object to an array of [key, value] pairs
-    const layersArray = Object.entries(layers);
-
-    // Sort the array in descending order by key (layer number)
-    layersArray.sort((a, b) => Number(b[0]) - Number(a[0]));
-
-    // Convert the sorted array back to an object
-    const localSortedLayers = Object.fromEntries(layersArray);
-
-    fs.writeFileSync('userPriceLayers.json', JSON.stringify(localSortedLayers, null, 2), 'utf8');
-
-    // Assign localSortedLayers to the global variable
-    sortedLayers = localSortedLayers;
-
-    return localSortedLayers;
-}
-
 async function getBalance(
-	wallet,
+	payer,
 	selectedAddressA,
 	selectedAddressB,
 	selectedTokenA,
-	selectedTokenB,
+	selectedTokenB
 ) {
-	const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-	const SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112";
-
 	async function getSOLBalanceAndUSDC() {
-		const lamports = await connection.getBalance(wallet.publicKey);
+		const lamports = await connection.getBalance(payer.publicKey);
 		const solBalance = lamports / solanaWeb3.LAMPORTS_PER_SOL;
 		if (solBalance === 0) {
 			console.log(`You do not have any SOL, please check and try again.`);
@@ -812,10 +565,10 @@ async function getBalance(
 					inputMint: SOL_MINT_ADDRESS,
 					outputMint: USDC_MINT_ADDRESS,
 					amount: lamports, // Amount in lamports
-					slippageBps: 0,
+					slippageBps: 0
 				};
 				const response = await axios.get(quoteurl, {
-					params: queryParams,
+					params: queryParams
 				});
 				usdBalance = response.data.outAmount / Math.pow(10, 6) || 0;
 				tokenRebalanceValue =
@@ -837,8 +590,8 @@ async function getBalance(
 
 		const tokenAccounts = await getTokenAccounts(
 			connection,
-			wallet.publicKey,
-			mintAddress,
+			payer.publicKey,
+			mintAddress
 		);
 		if (tokenAccounts.value.length > 0) {
 			const balance =
@@ -847,7 +600,7 @@ async function getBalance(
 			let usdBalance = 0;
 			if (balance === 0) {
 				console.log(
-					`You do not have a balance for ${mintAddress}, please check and try again.`,
+					`You do not have a balance for ${mintAddress}, please check and try again.`
 				);
 				process.exit(0);
 			}
@@ -856,14 +609,14 @@ async function getBalance(
 					inputMint: mintAddress,
 					outputMint: USDC_MINT_ADDRESS,
 					amount: Math.floor(balance * Math.pow(10, decimals)),
-					slippageBps: 0,
+					slippageBps: 0
 				};
 
 				try {
 					const response = await axios.get(quoteurl, {
-						params: queryParams,
+						params: queryParams
 					});
-					//Save USD Balance and adjust down for Lamports
+					// Save USD Balance and adjust down for Lamports
 					usdBalance = response.data.outAmount / Math.pow(10, 6);
 					tokenRebalanceValue =
 						response.data.outAmount / (balance * Math.pow(10, 6));
@@ -875,7 +628,7 @@ async function getBalance(
 				usdBalance = balance; // If the token is USDC, its balance is its USD equivalent
 				if (usdBalance === 0) {
 					console.log(
-						`You do not have any USDC, please check and try again.`,
+						`You do not have any USDC, please check and try again.`
 					);
 					process.exit(0);
 				}
@@ -888,39 +641,29 @@ async function getBalance(
 		}
 	}
 
-	let arbPass = await getTokenAndUSDCBalance("9tzZzEHsKnwFL1A3DyFJwj36KnZj3gZ7g4srWp9YTEoh", 6);
-	if (arbPass.balance < 25000) {
-		console.log(
-			"Please ensure you have at least 25,000 ARB to continue.",
-		);
-		console.log(`You currently have ${arbPass.balance} ARB in wallet ${wallet.publicKey}`);
-		process.exit(0);
-	}
-
-	let resultA = await getTokenAndUSDCBalance(
+	const resultA = await getTokenAndUSDCBalance(
 		selectedAddressA,
-		selectedDecimalsA,
+		selectedDecimalsA
 	);
-	let resultB = await getTokenAndUSDCBalance(
+	const resultB = await getTokenAndUSDCBalance(
 		selectedAddressB,
-		selectedDecimalsB,
+		selectedDecimalsB
 	);
 
 	if (resultA.balance === 0 || resultB.balance === 0) {
 		console.log(
-			"Please ensure you have a balance in both tokens to continue.",
+			"Please ensure you have a balance in both tokens to continue."
 		);
 		process.exit(0);
 	}
-	prevBalA = resultA.balance;
-	prevBalB = resultB.balance;
+
 	return {
 		balanceA: resultA.balance,
 		usdBalanceA: resultA.usdBalance,
 		tokenARebalanceValue: resultA.tokenRebalanceValue,
 		balanceB: resultB.balance,
 		usdBalanceB: resultB.usdBalance,
-		tokenBRebalanceValue: resultB.tokenRebalanceValue,
+		tokenBRebalanceValue: resultB.tokenRebalanceValue
 	};
 }
 
@@ -939,202 +682,29 @@ function formatElapsedTime(startTime) {
 	minutes = String(minutes).padStart(2, "0");
 	seconds = String(seconds).padStart(2, "0");
 
-	console.log(`Run time: ${hours}:${minutes}:${seconds}`);
+	console.log(`\u{23F1}  Run time: ${hours}:${minutes}:${seconds}`);
 }
 
-async function infinityGrid() {
-	//await balanceCheck()
-	process.exit(0);
-	let currentBalances = await getBalance(wallet, selectedAddressA, selectedAddressB, selectedTokenA, selectedTokenB);
-	currBalanceA = currentBalances.balanceA; // Current balance of token A
-	currBalanceB = currentBalances.balanceB; // Current balance of token B
-	currUSDBalanceA = currentBalances.usdBalanceA; // Current USD balance of token A
-	currUSDBalanceB = currentBalances.usdBalanceB; // Current USD balance of token B
-	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB; // Current total USD balance
-	let tokenBPrice = currUSDBalanceB / currBalanceB; // Current price of token B
-	let tokenAPrice = currUSDBalanceA / currBalanceA; // Current price of token A
-
-if (currUsdTotalBalance < stopLossUSD) {
-	//Emergency Stop Loss
-	console.log(`\n\u{1F6A8} Emergency Stop Loss Triggered! - Cashing out and Exiting`);
-
-}
-// Calculate the new prices of tokenB when it's up 1% and down 1%
-let newPriceBUp = tokenBPrice * 1.05; // 1% increase
-let newPriceBDown = tokenBPrice * 0.95; // 1% decrease
-
-let marketUpIn = (currUSDBalanceB - infinityTarget) / newPriceBUp; // Amount of tokenB to buy to maintain the target USD value
-let marketUpOut = marketUpIn * newPriceBUp ;
-let marketUpCalc = marketUpOut / marketUpIn;
-
-console.log("Current Market Price: ", tokenBPrice);
-console.log(`Infinity Target: ${infinityTarget}`);
-
-console.log(`\n${selectedTokenB} up 1%: ${newPriceBUp}`);
-console.log("Amount of B to send: ", marketUpIn);
-console.log("Amount of A to receive: ", marketUpOut);
-console.log("Calculated Market Price: ", marketUpCalc);
-
-// Calculate the amount of tokenB to buy to maintain the target USD value
-let marketDownOut = (infinityTarget - currUSDBalanceB) / newPriceBDown
-let marketDownIn = marketDownOut * newPriceBDown;
-let marketDownCalc = marketDownIn / marketDownOut;
-
-console.log(`\n${selectedTokenB} down 1%: ${newPriceBDown}`);
-console.log("Amount of B to recieve: ", marketDownOut);
-console.log("Amount of A to send: ", marketDownIn);
-console.log("Calculated Market Price: ", marketDownCalc);
-
-
-
-
-
-/*
-//Buy layer
-sendTx(
-	Math.floor(marketDownIn * Math.pow(10, selectedDecimalsA)),
-	Math.floor(marketDownOut * Math.pow(10, selectedDecimalsB)),
-	selectedAddressA,
-	selectedAddressB,
-	Keypair.generate(),
-);
-//Sell Layer
-sendTx(
-	Math.floor(marketUpIn * Math.pow(10, selectedDecimalsB)),
-	Math.floor(marketUpOut * Math.pow(10, selectedDecimalsA)),
-	selectedAddressB,
-	selectedAddressA,
-	Keypair.generate(),
-);
-*/
-}
-
-
-async function monitorPrice(
-	selectedAddressA,
-	selectedAddressB,
-	tradeSizeInLamports,
-	maxRetries = 5,
-) {
+async function monitor() {
 	if (shutDown) return;
+	const maxRetries = 20;
 	let retries = 0;
 	await updateMainDisplay();
 	while (retries < maxRetries) {
 		try {
 			await checkOpenOrders();
-
-			if (checkArray.length !== 2) {
-				let missingKeys = [];
-				let remainingKeys = []; // Adjusted to track multiple remaining keys
-				const queryParams = {
-					inputMint: selectedAddressA,
-					outputMint: selectedAddressB,
-					amount: tradeSizeInLamports,
-					slippageBps: 0,
-				};
-
-				const response = await axios.get(quoteurl, {
-					params: queryParams,
-				});
-				const newPrice = response.data.outAmount;
-
-				if (checkArray.length === 0) {
-					console.log("No orders found. Resetting and placing orders at last known layers.");
-					await setOrders();
-
-				} else if (checkArray.length === 1) {
-					// Identify which key(s) are missing
-					if (!checkArray.includes(buyKey)) {
-						lastFilledOrder = "buy";
-						missingKeys.push("Buy Key");
-					} else {
-						remainingKeys.push("Buy Key"); // Buy Key is not missing, so it's remaining
-					}
-					if (!checkArray.includes(sellKey)) {
-						lastFilledOrder = "sell";
-						missingKeys.push("Sell Key");
-					} else {
-						remainingKeys.push("Sell Key"); // Sell Key is not missing, so it's remaining
-					}
-
-					// Adjust balances and profits based on which key is missing
-					if (missingKeys.includes("Buy Key")) {
-						currCalcBalA =
-							prevBalA -
-							buyInput / Math.pow(10, selectedDecimalsA);
-						currCalcBalB =
-							prevBalB +
-							(buyOutput * 0.999) /
-								Math.pow(10, selectedDecimalsB);
-						profitSumA =
-							profitSumA -
-							buyInput / Math.pow(10, selectedDecimalsA);
-						profitSumB =
-							profitSumB +
-							(buyOutput * 0.999) /
-								Math.pow(10, selectedDecimalsB);
-						buysFilled++;
-					} else if (missingKeys.includes("Sell Key")) {
-						currCalcBalA =
-							prevBalA +
-							(sellOutput * 0.999) /
-								Math.pow(10, selectedDecimalsA);
-						currCalcBalB =
-							prevBalB -
-							sellInput / Math.pow(10, selectedDecimalsB);
-						profitSumA =
-							profitSumA +
-							(sellOutput * 0.999) /
-								Math.pow(10, selectedDecimalsA);
-						profitSumB =
-							profitSumB -
-							sellInput / Math.pow(10, selectedDecimalsB);
-						sellsFilled++;
-					}
-					prevBalA = currCalcBalA;
-					prevBalB = currCalcBalB;
-
-					console.log(
-						"Missing Key: " +
-							missingKeys[0] +
-							". Resetting price points and placing new orders.",
-					);
-					await recalculateLayers(
-						tradeSizeInLamports,
-						sortedLayers
-					);
-				} else if (checkArray.length > 2) {
-					console.log(
-						"Excessive orders found, identifying valid orders and resetting.",
-					);
-					await recalculateLayers(
-						tradeSizeInLamports,
-						sortedLayers
-					);
-					// Here, you'd identify which orders are valid, potentially adjusting remainingKeys accordingly
-				}
-			} else {
-				console.log("2 open orders. Waiting for change.");
-				await delay(monitorDelay);
-				return monitorPrice(
-					selectedAddressA,
-					selectedAddressB,
-					tradeSizeInLamports,
-					maxRetries,
-				);
-			}
-
+			await handleOrders(checkArray);
 			break; // Break the loop if we've successfully handled the price monitoring
 		} catch (error) {
-			console.log(error)
+			console.log(error);
 			console.error(
-				`Error: Connection or Token Data Error (Monitor Price) - (Attempt ${retries + 1} of ${maxRetries})`,
+				`Error: Connection or Token Data Error (Monitor Price) - (Attempt ${retries + 1} of ${maxRetries})`
 			);
 			retries++;
 
 			if (retries === maxRetries) {
 				console.error(
-					"Maximum number of retries reached. Unable to retrieve data.",
+					"Maximum number of retries reached. Unable to retrieve data."
 				);
 				return null;
 			}
@@ -1142,268 +712,363 @@ async function monitorPrice(
 	}
 }
 
-async function updateUSDVal(mintAddress, balance, decimals) {
-	const queryParams = {
-		inputMint: mintAddress,
-		outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-		amount: Math.floor(balance * Math.pow(10, decimals)),
-		slippageBps: 0,
-	};
-
-	try {
-		const response = await axios.get(quoteurl, {
-			params: queryParams,
-		});
-		//Save USD Balance and adjust down for Lamports
-		const usdBalance = response.data.outAmount / Math.pow(10, 6);
-		return usdBalance;
-	} catch (error) {
-		// Error is not critical. 
-		// Reuse the previous balances and try another update again next cycle.
+async function handleOrders(checkArray) {
+	if (checkArray.length !== 2) {
+		infinityGrid();
+	} else {
+		console.log("2 open orders. Waiting for change.");
+		await delay(monitorDelay);
+		await monitor();
 	}
+}
+
+async function infinityGrid() {
+	if (shutDown) return;
+
+	// Increment trades counter
+	counter++;
+
+	// Cancel any existing orders
+	await jitoController("cancel");
+
+	// Check to see if we need to rebalance
+	await jitoController("rebalance");
+	askForRebalance = false;
+
+    // Get the current balances
+    const { balanceA, balanceB } = await getBalance(payer, selectedAddressA, selectedAddressB, selectedTokenA, selectedTokenB);
+    let balanceALamports = balanceA * Math.pow(10, selectedDecimalsA);
+    let balanceBLamports = balanceB * Math.pow(10, selectedDecimalsB);
+
+    // Get the current market price
+    const marketPrice = await fetchPrice(selectedAddressB);
+	await delay(1000)
+	const marketPrice2 = await fetchPrice(selectedAddressB);
+	await delay(1000)
+	const marketPrice3 = await fetchPrice(selectedAddressB);
+	const averageMarketPrice = (marketPrice + marketPrice2 + marketPrice3) / 3;
+    currUsdTotalBalance = balanceA + (balanceB * averageMarketPrice);
+	console.log(`Current USD Total Balance: ${currUsdTotalBalance}`)
+
+	// Emergency Stop Loss
+	if (currUsdTotalBalance < stopLossUSD) {
+		console.clear();
+		console.log(`\n\u{1F6A8} Emergency Stop Loss Triggered! - Exiting`);
+		stopLoss = true;
+		process.kill(process.pid, "SIGINT");
+	}
+    // Calculate the new prices of tokenB when it's up and down by the spread%
+    newPriceBUp = averageMarketPrice * (1 + (spreadbps * 1.3) / 10000);
+    newPriceBDown = averageMarketPrice * (1 - spreadbps / 10000);
+    
+    // Calculate the current value of TokenB in USD
+    const currentValueUSD = balanceBLamports / Math.pow(10, selectedDecimalsB) * averageMarketPrice;
+    
+    // Calculate the target value of TokenB in USD at the new prices
+    const targetValueUSDUp = balanceBLamports / Math.pow(10, selectedDecimalsB) * newPriceBUp;
+    const targetValueUSDDown = balanceBLamports / Math.pow(10, selectedDecimalsB) * newPriceBDown;
+    
+    // Calculate the initial lamports to sell and buy
+    let lamportsToSellInitial = Math.floor((targetValueUSDUp - infinityTarget) / newPriceBUp * Math.pow(10, selectedDecimalsB)/0.998);
+    let lamportsToBuyInitial = Math.floor((infinityTarget - targetValueUSDDown) / newPriceBDown * Math.pow(10, selectedDecimalsB)/0.998);
+
+    // Adjust the lamports to buy based on the potential cancellation of the sell order
+    let lamportsToBuy = lamportsToBuyInitial - lamportsToSellInitial;
+
+    // lamportsToSell remains the same as lamportsToSellInitial
+    let lamportsToSell = lamportsToSellInitial;
+
+    // Calculate the expected USDC for the sell and buy
+	const decimalDiff = selectedDecimalsB - selectedDecimalsA;
+    const expectedUSDCForSell = (lamportsToSell * newPriceBUp) / Math.pow(10, selectedDecimalsB);
+    const expectedUSDCForBuy = (lamportsToBuy * newPriceBDown) / Math.pow(10, selectedDecimalsB);
+    const expectedUSDCForSellLamports = Math.floor((lamportsToSell * newPriceBUp) / Math.pow(10, decimalDiff));
+	const expectedUSDCForBuyLamports = Math.floor((lamportsToBuy * newPriceBDown) / Math.pow(10, decimalDiff));
+
+    // Derive the MarketUp and MarketDown prices from the lamports to buy/sell
+    const derivedMarketPriceUp = expectedUSDCForSellLamports / lamportsToSell;
+    const derivedMarketPriceDown = expectedUSDCForBuyLamports / lamportsToBuy;
+
+	//Translate variables to be used for jitoController
+	infinityBuyInputLamports = expectedUSDCForBuyLamports;
+	infinityBuyOutputLamports = lamportsToBuy;
+	infinitySellInputLamports = lamportsToSell;
+	infinitySellOutputLamports = expectedUSDCForSellLamports;
+
+	// Check if the balances are enough to place the orders (With a 5% buffer)
+	if (infinitySellInputLamports > balanceBLamports * 1.05) {
+		console.log("Token B Balance not enough to place Sell Order. Exiting.");
+		process.kill(process.pid, "SIGINT");
+	}
+	if (infinityBuyInputLamports > balanceALamports * 1.05) {
+		console.log("Token A Balance not enough to place Buy Order. Exiting.");
+		process.kill(process.pid, "SIGINT");
+	}
+    // Log the values
+
+	/*
+    console.log(`TokenA Balance: ${balanceA}`);
+    console.log(`TokenA Balance Lamports: ${balanceALamports}`);
+    console.log(`TokenB Balance: ${balanceB}`);
+    console.log(`TokenB Balance Lamports: ${balanceBLamports}`);
+    console.log(`TokenB Balance USD: ${currentValueUSD}`);
+    console.log(`Infinity Target: ${infinityTarget}`);
+    console.log(`Market Price: ${marketPrice.toFixed(2)}`);
+    console.log(`Market Price Up: ${newPriceBUp.toFixed(2)}`);
+    console.log(`Derived Market Price Up: ${derivedMarketPriceUp.toFixed(2)}`);
+    console.log(`Market Price Down: ${newPriceBDown.toFixed(2)}`);
+    console.log(`Derived Market Price Down: ${derivedMarketPriceDown.toFixed(2)}`);
+    console.log(`Target Value of TokenB in USD Up: ${targetValueUSDUp}`);
+    console.log(`Target Value of TokenB in USD Down: ${targetValueUSDDown}`);
+    console.log(`Lamports to Sell: ${lamportsToSell}`);
+    console.log(`Expected USDC for Sell: ${expectedUSDCForSell}`);
+    console.log(`USDC Lamports for Sell ${expectedUSDCForSellLamports}`);
+    console.log(`Lamports to Buy: ${lamportsToBuy}`);
+    console.log(`Expected USDC for Buy: ${expectedUSDCForBuy}`);
+    console.log(`USDC Lamports for Buy ${expectedUSDCForBuyLamports}\n`);
+	*/
+	
+	await jitoController("infinity");
+	console.log(
+		"Pause for 5 seconds to allow orders to finalize on blockchain.",
+		await delay(5000)
+	);
+	monitor();
+}
+
+async function fetchPrice(tokenAddress) {
+    const response = await axios.get(`https://price.jup.ag/v6/price?ids=${tokenAddress}`);
+    const price = response.data.data[tokenAddress].price;
+    return parseFloat(price);
+}
+
+async function updateUSDVal(mintAddress, balance, decimals) {
+    try {
+        let price = await fetchPrice(mintAddress);
+        let balanceLamports = Math.floor(balance * Math.pow(10, decimals));
+        const usdBalance = balanceLamports * price;
+        const usdBalanceLamports =usdBalance / Math.pow(10, decimals);
+        return usdBalanceLamports;
+    } catch (error) {
+        // Error is not critical.
+        // Reuse the previous balances and try another update again next cycle.
+    }
+}
+
+async function fetchNewUSDValues() {
+	const tempUSDBalanceA = await updateUSDVal(
+	  selectedAddressA,
+	  currBalanceA,
+	  selectedDecimalsA
+	);
+	const tempUSDBalanceB = await updateUSDVal(
+	  selectedAddressB,
+	  currBalanceB,
+	  selectedDecimalsB
+	);
+  
+	return {
+	  newUSDBalanceA: tempUSDBalanceA ?? currUSDBalanceA,
+	  newUSDBalanceB: tempUSDBalanceB ?? currUSDBalanceB,
+	};
+}
+
+function calculateProfitOrLoss(currUsdTotalBalance, initUsdTotalBalance) {
+	const profitOrLoss = currUsdTotalBalance - initUsdTotalBalance;
+	const percentageChange = (profitOrLoss / initUsdTotalBalance) * 100;
+	return { profitOrLoss, percentageChange };
+}
+  
+function displayProfitOrLoss(profitOrLoss, percentageChange) {
+	if (profitOrLoss > 0) {
+	  console.log(
+		`Profit : ${chalk.green(`+$${profitOrLoss.toFixed(2)} (+${percentageChange.toFixed(2)}%)`)}`
+	  );
+	} else if (profitOrLoss < 0) {
+	  console.log(
+		`Loss : ${chalk.red(`-$${Math.abs(profitOrLoss).toFixed(2)} (-${Math.abs(percentageChange).toFixed(2)}%)`)}`
+	  );
+	} else {
+	  console.log(`Difference : $${profitOrLoss.toFixed(2)} (0.00%)`); // Neutral
+	}
+}
+
+async function updatePrice() {
+	let retries = 0;
+	const maxRetries = 5;
+    while (retries < maxRetries) {
+        try {
+            let newPrice = await fetchPrice(selectedAddressB);
+            if(newPrice !== undefined) {
+                lastKnownPrice = newPrice;
+                return newPrice;
+            }
+        } catch (error) {
+            console.error(`Fetch price failed. Attempt ${retries + 1} of ${maxRetries}`);
+        }
+        retries++;
+    }
+
+    if(lastKnownPrice !== null) {
+        return lastKnownPrice;
+    } else {
+        throw new Error("Unable to fetch price and no last known price available");
+    }
+}
+
+async function formatTokenPrice(price) {
+    let multiplier = 1;
+    let quantity = "";
+
+    if (price >= 1) {
+        // For prices above $1, no adjustment needed
+        return { multiplier, quantity };
+    } else {
+        // Adjust for prices below $1
+        if (price <= 0.00000001) {
+            multiplier = 100000000;
+            quantity = "per 100,000,000";
+        } else if (price <= 0.0000001) {
+            multiplier = 10000000;
+            quantity = "per 10,000,000";
+        } else if (price <= 0.000001) {
+            multiplier = 1000000;
+            quantity = "per 1,000,000";
+        } else if (price <= 0.00001) {
+            multiplier = 100000;
+            quantity = "per 100,000";
+        } else if (price <= 0.0001) {
+            multiplier = 10000;
+            quantity = "per 10,000";
+        } else if (price <= 0.001) {
+            multiplier = 1000;
+            quantity = "per 1,000";
+        } else if (price <= 0.99) {
+            multiplier = 100;
+            quantity = "per 100";
+        } else if (price >= 1) {
+            multiplier = 1; // No change needed, but included for clarity
+            quantity = ""; // No additional quantity description needed
+        }
+        return { multiplier, quantity };
+    }
 }
 
 async function updateMainDisplay() {
 	console.clear();
-	console.log(`Jupgrid v${version}`);
+	console.log(`Jupgrid v${packageInfo.version}`);
+	console.log(`\u{267E}  Infinity Mode`);
+	console.log(`\u{1F4B0} Wallet: ${displayAddress}`);
 	formatElapsedTime(startTime);
-	console.log(
-		`Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)} - Spread: ${spread}%`,
-	);
 	console.log(`-`);
-
+	console.log(
+	  `\u{1F527} Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)}\n\u{1F3AF} ${selectedTokenB} Target Value: $${infinityTarget}\n\u{1F6A8} Stop Loss at $${stopLossUSD}\n\u{2B65} Spread: ${spread}%\n\u{1F55A} Monitor Delay: ${monitorDelay}ms`
+	);
 	try {
-		// Attempt to fetch the new USD values
-		const tempUSDBalanceA = await updateUSDVal(
-			selectedAddressA,
-			currBalanceA,
-			selectedDecimalsA,
-		);
-		const tempUSDBalanceB = await updateUSDVal(
-			selectedAddressB,
-			currBalanceB,
-			selectedDecimalsB,
-		);
-
-		currUSDBalanceA = tempUSDBalanceA ?? currUSDBalanceA; // Fallback to current value if undefined
-		currUSDBalanceB = tempUSDBalanceB ?? currUSDBalanceB; // Fallback to current value if undefined
-		currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB; // Recalculate total
+	const { newUSDBalanceA, newUSDBalanceB } = await fetchNewUSDValues();
+	currUSDBalanceA = newUSDBalanceA;
+	currUSDBalanceB = newUSDBalanceB;
+	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB; // Recalculate total
+	newPrice = await updatePrice(selectedAddressB);
 	} catch (error) {
-		//Error is not critical. Reuse the previous balances and try another update again next cycle.
+	  // Error is not critical. Reuse the previous balances and try another update again next cycle.
 	}
 
-	console.log(`Starting Balance : $${initUsdTotalBalance.toFixed(2)}`);
-	console.log(`Current Balance  : $${currUsdTotalBalance.toFixed(2)}`);
-	let profitOrLoss = currUsdTotalBalance - initUsdTotalBalance;
-	let percentageChange = (profitOrLoss / initUsdTotalBalance) * 100;
-	if (profitOrLoss > 0) {
-		console.log(
-			`Profit : ${chalk.green(`+$${profitOrLoss.toFixed(2)} (${percentageChange.toFixed(2)}%)`)}`,
-		);
-	} else if (profitOrLoss < 0) {
-		console.log(
-			`Loss : ${chalk.red(`-$${Math.abs(profitOrLoss).toFixed(2)} (${Math.abs(percentageChange).toFixed(2)}%)`)}`,
-		);
-	} else {
-		console.log(`Difference : $${profitOrLoss.toFixed(2)} (0.00%)`); // Neutral
+	if (currUsdTotalBalance < stopLossUSD) {
+	  // Emergency Stop Loss
+	  console.clear();
+	  console.log(
+		`\n\u{1F6A8} Emergency Stop Loss Triggered! - Cashing out and Exiting`
+	  );
+	  stopLoss = true;
+	  process.kill(process.pid, "SIGINT");
 	}
-	console.log(`-`);
 
-	console.log(
-		`Latest Snapshot Balance ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(currBalanceA.toFixed(5))}`,
-	);
-	console.log(
-		`Latest Snapshot Balance ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(currBalanceB.toFixed(5))}`,
-	);
-	console.log(`-`);
+	let {multiplier, quantity} = await formatTokenPrice(newPrice);
+	let adjustedNewPrice = newPrice * multiplier
+	let adjustedNewPriceBUp = newPriceBUp * multiplier
+	let adjustedNewPriceBDown = newPriceBDown * multiplier
+	if(iteration === 0)
+	{
+			currentTracker = new Array(50).fill(adjustedNewPrice);
+			sellPrice = new Array(50).fill(adjustedNewPriceBUp);
+			buyPrice = new Array(50).fill(adjustedNewPriceBDown);
+	}
 
-	console.log(`Experimental Data Below...`);
-	console.log(
-		`${chalk.cyan(selectedTokenA)} Calculated Change: ${chalk.cyan(profitSumA.toFixed(5))}`,
-	);
-	console.log(
-		`${chalk.magenta(selectedTokenB)} Calculated Change: ${chalk.magenta(profitSumB.toFixed(5))}`,
-	);
-	console.log(`Buy Orders Filled: ${buysFilled}`);
-	console.log(`Sell Orders Filled: ${sellsFilled}`);
-	console.log(`Recovered Transactions: ${recoveredTransactionsCount}\n`);
+	currentTracker.splice(0,0,(adjustedNewPrice).toString())
+	currentTracker.pop();
+	buyPrice.splice(0,0,(adjustedNewPriceBDown).toString())
+	buyPrice.pop();
+	sellPrice.splice(0,0,(adjustedNewPriceBUp).toString())
+	sellPrice.pop();
+	iteration++;
+	var config = {
+		height:20,
+		colors:[
+			asciichart.blue,
+			asciichart.green,
+			asciichart.yellow,
+		]
+	}
+	console.log(`-
+Starting Balance : $${initUsdTotalBalance.toFixed(2)}
+Current Balance  : $${currUsdTotalBalance.toFixed(2)}`);
+  
+	const { profitOrLoss, percentageChange } = calculateProfitOrLoss(currUsdTotalBalance, initUsdTotalBalance);
+	displayProfitOrLoss(profitOrLoss, percentageChange);
+  
+	console.log(`Market Change %: ${(((newPrice - startPrice) / startPrice) * 100).toFixed(2)}%
+Market Change USD: ${(newPrice - startPrice).toFixed(9)}
+Performance Delta: ${(percentageChange - ((newPrice - startPrice) / startPrice) * 100).toFixed(2)}%
+-
+Latest Snapshot Balance ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(currBalanceA.toFixed(5))} (Change: ${chalk.cyan((currBalanceA - initBalanceA).toFixed(5))}) - Worth: $${currUSDBalanceA.toFixed(2)}
+Latest Snapshot Balance ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(currBalanceB.toFixed(5))} (Change: ${chalk.magenta((currBalanceB - initBalanceB).toFixed(5))}) - Worth: $${currUSDBalanceB.toFixed(2)}
+-
+Starting Balance A - ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(initBalanceA.toFixed(5))}
+Starting Balance B - ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(initBalanceB.toFixed(5))}
+-
+Trades: ${counter}
+Rebalances: ${rebalanceCounter}
+-
+Sell Order Price: ${newPriceBUp.toFixed(9)} - Selling ${chalk.magenta(Math.abs(infinitySellInputLamports / Math.pow(10, selectedDecimalsB)))} ${chalk.magenta(selectedTokenB)} for ${chalk.cyan(Math.abs(infinitySellOutputLamports / Math.pow(10, selectedDecimalsA)))} ${chalk.cyan(selectedTokenA)}
+Current Price ${quantity}:`);
+console.log(asciichart.plot([currentTracker,buyPrice,sellPrice],config));
+console.log(`Buy Order Price: ${newPriceBDown.toFixed(9)} - Buying ${chalk.magenta(Math.abs(infinityBuyOutputLamports / Math.pow(10, selectedDecimalsB)))} ${chalk.magenta(selectedTokenB)} for ${chalk.cyan(Math.abs(infinityBuyInputLamports / Math.pow(10, selectedDecimalsA)))} ${chalk.cyan(selectedTokenA)}\n`);
 }
 
-async function recalculateLayers(tradeSizeInLamports, layers) {
-    console.log("\u{1F504} Calculating new price layers");
-    buyInput = tradeSizeInLamports;
-    sellOutput = tradeSizeInLamports;
-
-    let currentBuyLayer = Object.keys(layers).find(key => layers[key] === sellInput);
-    let currentSellLayer = Object.keys(layers).find(key => layers[key] === buyOutput);
-
-    if (lastFilledOrder === 'buy') {
-        // Price went down, move both orders down
-        currentBuyLayer = Number(currentBuyLayer) - 1;
-        currentSellLayer = Number(currentSellLayer) - 1;
-        console.log(`Last filled order was a buy. Moving down to layer ${currentBuyLayer} for buy order and layer ${currentSellLayer} for sell order.`);
-    } else if (lastFilledOrder === 'sell') {
-        // Price went up, move both orders up
-        currentBuyLayer = Number(currentBuyLayer) + 1;
-        currentSellLayer = Number(currentSellLayer) + 1;
-        console.log(`Last filled order was a sell. Moving up to layer ${currentBuyLayer} for buy order and layer ${currentSellLayer} for sell order.`);
-    } else {
-        console.log(`No order has been filled yet. Setting buy order to layer ${currentBuyLayer} and sell order to layer ${currentSellLayer}.`);
-    }
-
-    sellInput = layers[currentBuyLayer];
-    buyOutput = layers[currentSellLayer];
-
-    await cancelOrder(checkArray, wallet);
-    recalcs++;
-}
-
-async function sendTransactionAsync(
-	input,
-	output,
-	inputMint,
-	outputMint,
-	delay,
-) {
-	let orderPubkey = null;
-	let base = Keypair.generate();
-	await new Promise((resolve) => {
-		setTimeout(async () => {
-			try {
-				const transaction = await sendTx(
-					input,
-					output,
-					inputMint,
-					outputMint,
-					base,
-				);
-				if (transaction) {
-					orderPubkey = transaction.orderPubkey;
-				}
-				resolve();
-			} catch (error) {
-				console.error("Error sending transaction:", error);
-				resolve(); // Resolve the promise even in case of an error to continue with the next transaction
-			}
-		}, delay);
-	});
-	return orderPubkey;
-}
-
-async function setOrders() {
+async function createTx(inAmount, outAmount, inputMint, outputMint, base) {
 	if (shutDown) return;
-	console.log("");
-	try {
-		// Send the "buy" transactions
-		if (shutDown) return;
-		console.log("\u{1F4C9} Placing Buy Layer");
-		const buyOrder = await sendTransactionAsync(
-			buyInput,
-			buyOutput,
-			selectedAddressA,
-			selectedAddressB,
-			1000,
-		);
-		if (buyOrder) {
-			buyKey = buyOrder;
-		}
-
-		// Send the "sell" transaction
-		if (shutDown) return;
-		console.log("\u{1F4C8} Placing Sell Layer");
-		const sellOrder = await sendTransactionAsync(
-			sellInput,
-			sellOutput,
-			selectedAddressB,
-			selectedAddressA,
-			1000,
-		);
-		if (sellOrder) {
-			sellKey = sellOrder;
-		}
-		//Pause to allow Jupiter to store orders on chain
-		console.log(
-			"Pause for 5 seconds to allow orders to finalize on blockchain.",
-		);
-
-		await delay(5000);
-
-		monitorPrice(selectedAddressA, selectedAddressB, tradeSizeInLamports);
-	} catch (error) {
-		console.error("Error:", error);
-	}
-}
-/*
-async function getTxFee(txhash) {	
-	const tx = await connection.getTransaction(txhash, "confirmed");
-	return tx.meta.fee;
-}
-*/
-async function sendTx(inAmount, outAmount, inputMint, outputMint, base) {
-	if (shutDown) return;
-
-	const spinner = ora("Sending transaction...").start();
 
 	const maxRetries = 5;
 	const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 	let attempt = 0;
-	
-	let blockHeightErrorOccurred = false; // This flag resets with each function call
-
 	while (attempt < maxRetries) {
 		attempt++;
 		try {
-			let PRIORITY_RATE = priorityFee * attempt;
-			let PRIORITY_FEE_IX = solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({microLamports: PRIORITY_RATE})
-			const tokenAccounts = await getTokenAccounts(
-				connection,
-				wallet.publicKey,
-				new solanaWeb3.PublicKey("9tzZzEHsKnwFL1A3DyFJwj36KnZj3gZ7g4srWp9YTEoh"),
-			);
-			if (tokenAccounts.value.length === 0) {
-				console.log("No ARB token accounts found. Please purchase at least 25k ARB and try again.");
-				process.exit(0);
-			}
-			let CHECK_IX = new solanaWeb3.TransactionInstruction({
-				programId: new solanaWeb3.PublicKey("ARbCUfqDPeasSXWXD7mr7APHibguMg7oFMJUu1RNzprG"),
-				keys: [
-					{ pubkey: wallet.publicKey, isSigner: true, isWritable: false },
-					{ pubkey: tokenAccounts.value[0].pubkey, isSigner: false, isWritable: false },
-				],
-				data: Buffer.from([230, 144, 187, 66, 156, 221, 77, 41]),
-			});
-			// Make the API call to create the order and get back the transaction details
+
 			const response = await fetch(
 				"https://jup.ag/api/limit/v1/createOrder",
 				{
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
-						owner: wallet.publicKey.toString(),
+						owner: payer.publicKey.toString(),
 						inAmount,
 						outAmount,
 						inputMint: inputMint.toString(),
 						outputMint: outputMint.toString(),
 						expiredAt: null,
 						base: base.publicKey.toString(),
-<<<<<<< Updated upstream
 						referralAccount: "7WGULgEo4Veqj6sCvA3VNxGgBf3EXJd8sW2XniBda3bJ",
 						referralName: "Jupiter GridBot",
 					}),
 				},
-=======
-						referralAccount:
-							"7WGULgEo4Veqj6sCvA3VNxGgBf3EXJd8sW2XniBda3bJ",
-						referralName: "Jupiter GridBot"
-					})
-				}
->>>>>>> Stashed changes
 			);
 
 			if (!response.ok) {
 				throw new Error(
-					`Failed to create order: ${response.statusText}`,
+					`Failed to create order: ${response.statusText}`
 				);
 			}
 
@@ -1413,7 +1078,6 @@ async function sendTx(inAmount, outAmount, inputMint, outputMint, base) {
 			// Deserialize the raw transaction
 			const transactionBuf = Buffer.from(encodedTransaction, "base64");
 			const transaction = solanaWeb3.Transaction.from(transactionBuf);
-<<<<<<< Updated upstream
 
 			// Set the recent block hash and fee payer
 			const { blockhash } =
@@ -1441,58 +1105,21 @@ async function sendTx(inAmount, outAmount, inputMint, outputMint, base) {
 			spinner.succeed(`Transaction confirmed with ID: ${txid}`);
 			console.log(`https://solscan.io/tx/${txid}`);
 			console.log("Order Successful");
-=======
-			transaction.sign(payer, base);
-			console.log(responseData.orderPubkey);
+			await delay(2000);
+
 			return {
 				transaction,
 				orderPubkey: responseData.orderPubkey
 			};
+
+			// to be handled later
+			// return { txid, orderPubkey: responseData.orderPubkey};
 		} catch (error) {
->>>>>>> Stashed changes
 			await delay(2000);
-
-			return {
-				txid: txid,
-				orderPubkey: responseData.orderPubkey,
-			};
-		} catch (error) {
-			if (
-				blockHeightErrorOccurred &&
-				error.message.toLowerCase().includes("0x0")
-			) {
-				// Increment the global counter for recovered transactions
-				recoveredTransactionsCount++;
-				spinner.succeed(`Transaction confirmed, no TXID available.`);
-				// Reset the block height error flag for the next use of the function
-				blockHeightErrorOccurred = false;
-
-				// Return as if successful
-				return {
-					//txid: txid,
-					orderPubkey: responseData.orderPubkey,
-				};
-			} else if (
-				error.message.toLowerCase().includes("block height exceeded")
-			) {
-				spinner.fail(
-					`Attempt ${attempt} - Block height exceeded error: ${error.message}`,
-				);
-				blockHeightErrorOccurred = true;
-				await delay(2000);
-			} else {
-				// Handle all other errors
-				spinner.fail(
-					//`Attempt ${attempt} - Error in transaction: ${error.message}`,
-					spinner.fail(`Attempt ${attempt} - Error in transaction: ${error.message}, Full error: ${JSON.stringify(error, null, 2)}`),
-				);
-				await delay(2000);
-			}
 		}
 	}
-	//If we get here, its proper broken...
-	blockHeightErrorOccurred = false;
-	throw new Error("Transaction failed after maximum attempts.");
+	// If we get here, its proper broken...
+	throw new Error("Order Creation failed after maximum attempts.");
 }
 
 async function rebalanceTokens(
@@ -1500,399 +1127,245 @@ async function rebalanceTokens(
 	outputMint,
 	rebalanceValue,
 	rebalanceSlippageBPS,
-	quoteurl,
+	quoteurl
 ) {
 	if (shutDown) return;
 	const rebalanceLamports = Math.floor(rebalanceValue);
-	console.log(`Rebalancing Tokens ${selectedTokenA} and ${selectedTokenB}`);
-	let maxAttempts = 5;
-	let attempts = 0;
-	while (attempts < maxAttempts) {
-		attempts++;
-		try {
-			// Fetch the quote
-			const quoteResponse = await axios.get(
-				`${quoteurl}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${rebalanceLamports}&slippageBps=${rebalanceSlippageBPS}`,
-			);
-			//console.log(quoteResponse.data);
+	console.log(`Rebalancing Tokens ${chalk.cyan(selectedTokenA)} and ${chalk.magenta(selectedTokenB)}`);
 
-			const swapApiResponse = await fetch(
-				"https://quote-api.jup.ag/v6/swap",
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify({
-						quoteResponse: quoteResponse.data,
-						userPublicKey: wallet.publicKey,
-						wrapAndUnwrapSol: true,
-					}),
+	try {
+		// Fetch the quote
+		const quoteResponse = await axios.get(
+			`${quoteurl}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${rebalanceLamports}&autoSlippage=true&maxAutoSlippageBps=200` //slippageBps=${rebalanceSlippageBPS}
+		);
+
+		const swapApiResponse = await fetch(
+			"https://quote-api.jup.ag/v6/swap",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
 				},
-			);
-
-			const { blockhash } = await connection.getLatestBlockhash();
-			const swapData = await swapApiResponse.json();
-
-			if (!swapData || !swapData.swapTransaction) {
-				throw new Error("Swap transaction data not found.");
+				body: JSON.stringify({
+					quoteResponse: quoteResponse.data,
+					userPublicKey: payer.publicKey,
+					wrapAndUnwrapSol: true
+				})
 			}
+		);
 
-			// Deserialize the transaction correctly for a versioned message
-			const swapTransactionBuffer = Buffer.from(
-				swapData.swapTransaction,
-				"base64",
-			);
-			let transaction = VersionedTransaction.deserialize(
-				swapTransactionBuffer,
-			);
-			//console.log(transaction);
+		const { blockhash } = await connection.getLatestBlockhash();
+		const swapData = await swapApiResponse.json();
 
-			transaction.recentBlockhash = blockhash;
-			transaction.sign([wallet.payer]);
-			// Send it
-			const rawTransaction = transaction.serialize();
-			const txid = await connection.sendRawTransaction(rawTransaction, {
-				skipPreflight: false,
-				preflightCommitment: "processed",
-				maxRetries: 5,
-			});
-			await connection.confirmTransaction(txid, "processed");
-			console.log(`Transaction confirmed: https://solscan.io/tx/${txid}`);
-			break;
-		} catch (error) {
-			console.error("Error during the transaction:", error);
+		if (!swapData || !swapData.swapTransaction) {
+			throw new Error("Swap transaction data not found.");
 		}
+
+		// Deserialize the transaction correctly for a versioned message
+		const swapTransactionBuffer = Buffer.from(
+			swapData.swapTransaction,
+			"base64"
+		);
+		const transaction = VersionedTransaction.deserialize(
+			swapTransactionBuffer
+		);
+
+		transaction.recentBlockhash = blockhash;
+		transaction.sign([payer]);
+		return transaction;
+	} catch (error) {
+		console.error("Error during the transaction:", error);
 	}
 }
 
 async function checkOpenOrders() {
-	openOrders.length = 0;
-	checkArray.length = 0;
+	openOrders = [];
+	checkArray = [];
 
 	// Make the JSON request
 	openOrders = await limitOrder.getOrders([
-		ownerFilter(wallet.publicKey, "processed"),
+		ownerFilter(payer.publicKey, "processed")
 	]);
 
 	// Create an array to hold publicKey values
 	checkArray = openOrders.map((order) => order.publicKey.toString());
+	return checkArray;
 }
 
-async function cancelOrder(checkArray) {
-	if (checkArray.length === 0) {
-		setOrders();
-		return;
-	}
-	const spinner = ora("Cancelling orders...").start();
-
-	//Retry parameters
-	const maxRetries = 30; // Maximum number of retries
-	const cpause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-	let attempt = 1; // Initialize attempt counter
-
-	while (attempt <= maxRetries) {
-		try {
-			let PRIORITY_RATE = 100 * attempt;
-			let PRIORITY_FEE_IX = solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({microLamports: PRIORITY_RATE})
-			openOrders.length = 0;
-			checkArray.length = 0;
-
-			// Simulating your original logic to get orders
-			openOrders = await limitOrder.getOrders([
-				ownerFilter(wallet.publicKey, "processed"),
-			]);
-
-			checkArray = openOrders.map((order) => order.publicKey.toString());
-			if (checkArray.length === 0) {
-				spinner.succeed("No open orders found, resetting.");
-				setOrders();
-				return; // Exit if no orders need cancelling
-			}
-
-			spinner.text = "Cancelling Orders, Please Wait";
-
-			const requestData = {
-				owner: wallet.publicKey.toString(),
-				feePayer: wallet.publicKey.toString(),
-				orders: Array.from(checkArray),
-			};
-
-			const response = await fetch(
-				"https://jup.ag/api/limit/v1/cancelOrders",
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify(requestData),
-				},
-			);
-
-			if (!response.ok) {
-				throw new Error(`HTTP error! Status: ${response.status}`);
-			}
-
-			const responseData = await response.json();
-			const transactionBase64 = responseData.tx;
-			const transactionBuf = Buffer.from(transactionBase64, "base64");
-			const transaction = solanaWeb3.Transaction.from(transactionBuf);
-			transaction.add(PRIORITY_FEE_IX);
-			const { blockhash } = await connection.getLatestBlockhash();
-			transaction.recentBlockhash = blockhash;
-			const signers = [wallet.payer];
-
-			const txid = await solanaWeb3.sendAndConfirmTransaction(
-				connection,
-				transaction,
-				signers,
-				{
-					skipPreflight: false,
-					preflightCommitment: "processed",
-					commitment: "processed",
-				},
-			);
-
-			spinner.succeed(`Cancellation Transaction Confirmed: ${txid}`);
-			console.log(`Transaction Receipt: https://solscan.io/tx/${txid}`);
-			await balanceCheck();
-			setOrders(); // Calls setOrders and exits if successful
-			return; // Exit after successful processing
-		} catch (error) {
-			spinner.fail(
-				`Attempt ${attempt} failed: ${error.message}, retrying...`,
-			);
-			if (attempt >= maxRetries) {
-				spinner.fail(
-					`Error canceling order after ${maxRetries} attempts: ${error.message}`,
-				);
-				console.error(`Final error canceling orders: ${error.message}`);
-				return; // Exit function after max retries
-			}
-			await cpause(5000); // Exponential backoff or constant delay
-			attempt++; // Increment attempt counter
+async function cancelOrder(target = [], payer) {
+	const retryCount = 10;
+    for (let i = 0; i < retryCount; i++) {
+		target = await checkOpenOrders();
+		if (target.length === 0) {
+			console.log("No orders to cancel.");
+			return "skip";
 		}
-	}
+		console.log(target);
+    	const requestData = {
+        owner: payer.publicKey.toString(),
+        feePayer: payer.publicKey.toString(),
+        orders: Array.from(target)
+    };
+        try {
+            const response = await fetch("https://jup.ag/api/limit/v1/cancelOrders", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(requestData)
+            });
+
+            if (!response.ok) {
+                console.log("Bad Cancel Order Request");
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+
+            const responseData = await response.json();
+            const transactionBase64 = responseData.tx;
+            const transactionBuf = Buffer.from(transactionBase64, "base64");
+            const transaction = solanaWeb3.Transaction.from(transactionBuf);
+
+            const { blockhash } = await connection.getLatestBlockhash();
+            transaction.recentBlockhash = blockhash;
+            transaction.sign(payer);
+            return transaction;
+        } catch (error) {
+			await delay(2000);
+            if (i === retryCount - 1) throw error; // If last retry, throw error
+            console.log(`Attempt ${i + 1} failed. Retrying...`);
+
+			target = await checkOpenOrders();
+        }
+    }
 }
 
 async function balanceCheck() {
-	//Update balances and profits
-	let currentBalances = await getBalance(
-		wallet,
-		selectedAddressA,
-		selectedAddressB,
-		selectedTokenA,
-		selectedTokenB,
+	console.log("Checking Portfolio, we will rebalance if necessary.");
+	const currentBalances = await getBalance(
+	  payer,
+	  selectedAddressA,
+	  selectedAddressB,
+	  selectedTokenA,
+	  selectedTokenB
 	);
-	console.log("Balances Updated");
-	// Calculate profit
-	profitA = currentBalances.usdBalanceA - initUsdBalanceA;
-	profitB = currentBalances.usdBalanceB - initUsdBalanceB;
+  
 	currBalanceA = currentBalances.balanceA;
 	currBalanceB = currentBalances.balanceB;
 	currUSDBalanceA = currentBalances.usdBalanceA;
 	currUSDBalanceB = currentBalances.usdBalanceB;
 	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB;
-	let percentageOfA = 0;
-	let percentageOfB = 0;
-	if (currUsdTotalBalance > 0) {
-		percentageOfA = (currUSDBalanceA / currUsdTotalBalance) * 100;
-		percentageOfB = (currUSDBalanceB / currUsdTotalBalance) * 100;
-	}
 	tokenARebalanceValue = currentBalances.tokenARebalanceValue;
 	tokenBRebalanceValue = currentBalances.tokenBRebalanceValue;
-
-	
-	//Rebalancing allowed check
-	if ( rebalanceAllowed && (percentageOfA < rebalancePercentage || percentageOfB < rebalancePercentage) || infinityMode ) {
-		if (infinityMode) {
-			if (!currUsdTotalBalance > infinityTarget) {
-				console.log(`Your total balance is not high enough for your Infinity Target. Please either increase your wallet balance or reduce your target.`);
-				process.exit(0); // Exit program
-			}
-			let targetUsdBalancePerToken = infinityTarget;
-			if (currUSDBalanceB < targetUsdBalancePerToken) {
-				// Calculate how much more of TokenB we need to reach the target
-				let deficit = (targetUsdBalancePerToken - currUSDBalanceB) * Math.pow(10, selectedDecimalsA);
-			
-				// Calculate how much of TokenA we need to sell to buy the deficit amount of TokenB
-				adjustmentA = -1 * deficit / tokenARebalanceValue;
-			} else if (currUSDBalanceB > targetUsdBalancePerToken) {
-				// Calculate how much we have exceeded the target
-				let surplus = (currUSDBalanceB - targetUsdBalancePerToken) * Math.pow(10, selectedDecimalsB);
-			
-				// Calculate how much of TokenB we need to sell to get rid of the surplus
-				adjustmentB = -1 * (surplus / tokenBRebalanceValue);
-			}
-			//adjustmentA = currBalanceA - targetUsdBalancePerToken;
-			//adjustmentB = targetUsdBalancePerToken - currBalanceB;
-			rebalanceSlippageBPS = 100;
-			console.log("Infinity Mode Enabled");
-		} else {
-			let targetUsdBalancePerToken = currUsdTotalBalance / 2;
-		adjustmentA = targetUsdBalancePerToken - currUSDBalanceA;
-		adjustmentB = targetUsdBalancePerToken - currUSDBalanceB;
-		}
-
-		//console.log(adjustmentA / Math.pow(10, selectedDecimalsA))
-		//console.log(adjustmentB / Math.pow(10, selectedDecimalsB))		
-		if (adjustmentA < 0) {
-			// Token A's USD balance is above the target, calculate how much Token A to sell
-			let rebalanceValue = adjustmentA;
-			if (!infinityMode) {
-				rebalanceValue = (Math.abs(adjustmentA) / Math.abs(tokenARebalanceValue)) * Math.pow(10, selectedDecimalsA);
-			}
-			console.log(
-				`Need to sell ${chalk.cyan(rebalanceValue / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to balance.`,
-			);
-			await rebalanceTokens(
-				selectedAddressA,
-				selectedAddressB,
-				Math.abs(rebalanceValue),
-				rebalanceSlippageBPS,
-				quoteurl,
-			);
-		} else if (adjustmentB < 0) {
-			// Token B's USD balance is above the target, calculate how much Token B to sell
-			let rebalanceValue = adjustmentB;
-			if (!infinityMode) {
-				rebalanceValue = (Math.abs(adjustmentB) / Math.abs(tokenBRebalanceValue)) * Math.pow(10, selectedDecimalsB);Can 
-			}
-			console.log(
-				`Need to sell ${chalk.magenta(rebalanceValue / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to balance.`,
-			);
-			await rebalanceTokens(
-				selectedAddressB,
-				selectedAddressA,
-				Math.abs(rebalanceValue),
-				rebalanceSlippageBPS,
-				quoteurl,
-			);
-		}
+	let currBalanceALamports = currBalanceA * Math.pow(10, selectedDecimalsA);
+	let currBalanceBLamports = currBalanceB * Math.pow(10, selectedDecimalsB);
+	if (currUsdTotalBalance < infinityTarget) {
+	  console.log(
+		`Your total balance is not high enough for your Token B Target Value. Please either increase your wallet balance or reduce your target.`
+	  );
+	  process.exit(0);
 	}
-	balancePercentageChange =
-		((currUsdTotalBalance - initUsdTotalBalance) / initUsdTotalBalance) *
-		100;
-	totalProfit = (profitA + profitB).toFixed(2);
-	console.log(
-		`Balance for Token A (${chalk.cyan(selectedTokenA)}): ${chalk.cyan(currBalanceA)}, $${chalk.cyan(currentBalances.usdBalanceA.toFixed(2))}`,
+	const targetUsdBalancePerToken = infinityTarget;
+	const percentageDifference = Math.abs(
+	  (currUSDBalanceB - targetUsdBalancePerToken) / targetUsdBalancePerToken
 	);
-	console.log(
-		`Balance for Token B (${chalk.magenta(selectedTokenB)}): ${chalk.magenta(currBalanceB)}, $${chalk.magenta(currentBalances.usdBalanceB.toFixed(2))}`,
-	);
-	console.log(`${selectedTokenA} profit since start: $${profitA.toFixed(2)}`);
-	console.log(`${selectedTokenB} profit since start: $${profitB.toFixed(2)}`);
+	if (percentageDifference > 0.03) {
+	  if (currUSDBalanceB < targetUsdBalancePerToken) {
+		const deficit =
+		  (targetUsdBalancePerToken - currUSDBalanceB) *
+		  Math.pow(10, selectedDecimalsA);
+		adjustmentA = Math.floor(
+		  Math.abs((-1 * deficit) / tokenARebalanceValue)
+		);
+	  } else if (currUSDBalanceB > targetUsdBalancePerToken) {
+		const surplus =
+		  (currUSDBalanceB - targetUsdBalancePerToken) *
+		  Math.pow(10, selectedDecimalsB);
+		adjustmentB = Math.floor(
+		  Math.abs(-1 * (surplus / tokenBRebalanceValue))
+		);
+	  }
+	} else {
+	  console.log("Token B $ value within 3% of target, skipping rebalance.");
+	  return "skip";
+	}
+	const rebalanceSlippageBPS = 200;
+  
+	const confirmTransaction = async () => {
+		if (!askForRebalance) {
+			return true;
+		}
+		const answer = await questionAsync('Do you want to proceed with this transaction? (Y/n) ');
+		if (answer.toUpperCase() === 'N') {
+		  console.log('Transaction cancelled by user. Closing program.');
+		  process.exit(0);
+		} else {
+			askForRebalance = false;
+		  return true;
+		}
+	  };
+  
+	if (adjustmentA > 0) {
+		if (adjustmentA > currBalanceALamports) {
+			console.log(adjustmentA);
+			console.log(currBalanceALamports);
+			console.log(
+				`You do not have enough ${selectedTokenA} to rebalance. There has been an error.
+Attempting to swap ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)}`
+			);
+			process.exit(0);
+		}
+	  console.log(
+		`Need to trade ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)} to balance.`
+	  );
+	  const userConfirmation = await confirmTransaction();
+	  if (userConfirmation) {
+		const rebalanceTx = await rebalanceTokens(
+		  selectedAddressA,
+		  selectedAddressB,
+		  adjustmentA,
+		  rebalanceSlippageBPS,
+		  quoteurl
+		);
+		return rebalanceTx;
+	  } else {
+		console.log('Transaction cancelled by user.');
+		return;
+	  }
+	} else if (adjustmentB > 0) {
+		if (adjustmentB > currBalanceBLamports) {
+			console.log(adjustmentB);
+			console.log(currBalanceBLamports);
+			console.log(
+				`You do not have enough ${selectedTokenB} to rebalance. There has been an error.
+Attempting to swap ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to ${chalk.cyan(selectedTokenA)}`
+			);
+			process.exit(0);
+		}
+	  console.log(
+		`Need to trade ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to ${chalk.cyan(selectedTokenA)} to balance.`
+	  );
+	  const userConfirmation = await confirmTransaction();
+	  if (userConfirmation) {
+		const rebalanceTx = await rebalanceTokens(
+		  selectedAddressB,
+		  selectedAddressA,
+		  adjustmentB,
+		  rebalanceSlippageBPS,
+		  quoteurl
+		);
+		return rebalanceTx;
+	  } else {
+		console.log('Transaction cancelled by user.');
+		return;
+	  }
+	}
 }
 
 process.on("SIGINT", () => {
-	//console.clear();
-	console.log("CTRL+C detected! Performing cleanup...");
+	console.log("\nCTRL+C detected! Performing cleanup...");
 	shutDown = true;
-
 	(async () => {
-		// Dynamically import ora
-		const spinner = ora(
-			"Preparing to close Jupgrid - Cancelling Orders",
-		).start();
-
-		// Retry parameters
-		
-		const maxRetries = 30; // Maximum number of retries
-		const cpause = (ms) =>
-			new Promise((resolve) => setTimeout(resolve, ms));
-		for (let attempt = 1; attempt <= maxRetries; attempt++) {
-			openOrders.length = 0;
-			checkArray.length = 0;
-
-			// Make the JSON request
-			openOrders = await limitOrder.getOrders([
-				ownerFilter(wallet.publicKey, "processed"),
-			]);
-
-			checkArray = openOrders.map((order) => order.publicKey.toString());
-			if (checkArray.length === 0) {
-				spinner.succeed("No open orders found, exiting now.");
-				process.exit(0);
-			} else {
-				try {
-					// Update spinner text instead of using console.log
-					spinner.text = "Please Wait";
-					let PRIORITY_RATE = 100 * attempt;
-					let PRIORITY_FEE_IX = solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({microLamports: PRIORITY_RATE})
-					const requestData = {
-						owner: wallet.publicKey.toString(),
-						feePayer: wallet.publicKey.toString(),
-						orders: Array.from(checkArray),
-					};
-
-					const response = await fetch(
-						"https://jup.ag/api/limit/v1/cancelOrders",
-						{
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-							},
-							body: JSON.stringify(requestData),
-						},
-					);
-
-					if (!response.ok) {
-						throw new Error(
-							`HTTP error! Status: ${response.status}`,
-						);
-					}
-
-					const responseData = await response.json();
-					const transactionBase64 = responseData.tx;
-					const transactionBuf = Buffer.from(
-						transactionBase64,
-						"base64",
-					);
-					const transaction =
-						solanaWeb3.Transaction.from(transactionBuf);
-					const signers = [wallet.payer];
-						transaction.add(PRIORITY_FEE_IX);
-					const txid = await solanaWeb3.sendAndConfirmTransaction(
-						connection,
-						transaction,
-						signers,
-						{
-							skipPreflight: false,
-							preflightCommitment: "processed",
-							commitment: "processed",
-						},
-					);
-
-					spinner.succeed(
-						`Cancellation Transaction Confirmed: ${txid}`,
-					);
-					console.log(
-						`Transaction Receipt: https://solscan.io/tx/${txid}`,
-					);
-					process.exit(0); // Ensure graceful exit
-				} catch (error) {
-					if (attempt === maxRetries) {
-						spinner.fail(
-							`Error canceling order after ${maxRetries} attempts: ${error.message}`,
-						);
-						console.error(
-							`Error canceling order/s: ${checkArray}:`,
-							error,
-						);
-						break; // Exit the loop after max retries
-					}
-					// Use spinner.fail to indicate a failed attempt but keep the process alive for retries
-					spinner.fail(`Attempt ${attempt} failed, retrying...`);
-					await cpause(5000); // 5 sec pause
-
-					// Restart the spinner with the original message for the next attempt
-					spinner.start(
-						"Preparing to close Jupgrid - Cancelling Orders",
-					);
-				}
-			}
-		}
+		await jitoController("cancel");
+		process.exit(0);
 	})();
 });
-
-export { connection, initialize };
