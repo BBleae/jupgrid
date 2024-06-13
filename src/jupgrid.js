@@ -24,6 +24,17 @@ import {
 	questionAsync,
 	rl
 } from './utils.js';
+<<<<<<< Updated upstream
+=======
+import logger from './logger.js';
+import {
+    jitoController,
+	buyOrderAddress,
+	sellOrderAddress
+} from './jito_utils.js';
+import asciichart from 'asciichart'
+// #endregion
+>>>>>>> Stashed changes
 
 const { Connection, Keypair, VersionedTransaction } = solanaWeb3;
 
@@ -1376,10 +1387,18 @@ async function sendTx(inAmount, outAmount, inputMint, outputMint, base) {
 						outputMint: outputMint.toString(),
 						expiredAt: null,
 						base: base.publicKey.toString(),
+<<<<<<< Updated upstream
 						referralAccount: "7WGULgEo4Veqj6sCvA3VNxGgBf3EXJd8sW2XniBda3bJ",
 						referralName: "Jupiter GridBot",
 					}),
 				},
+=======
+						referralAccount:
+							"7WGULgEo4Veqj6sCvA3VNxGgBf3EXJd8sW2XniBda3bJ",
+						referralName: "Jupiter GridBot"
+					})
+				}
+>>>>>>> Stashed changes
 			);
 
 			if (!response.ok) {
@@ -1394,6 +1413,7 @@ async function sendTx(inAmount, outAmount, inputMint, outputMint, base) {
 			// Deserialize the raw transaction
 			const transactionBuf = Buffer.from(encodedTransaction, "base64");
 			const transaction = solanaWeb3.Transaction.from(transactionBuf);
+<<<<<<< Updated upstream
 
 			// Set the recent block hash and fee payer
 			const { blockhash } =
@@ -1421,6 +1441,15 @@ async function sendTx(inAmount, outAmount, inputMint, outputMint, base) {
 			spinner.succeed(`Transaction confirmed with ID: ${txid}`);
 			console.log(`https://solscan.io/tx/${txid}`);
 			console.log("Order Successful");
+=======
+			transaction.sign(payer, base);
+			console.log(responseData.orderPubkey);
+			return {
+				transaction,
+				orderPubkey: responseData.orderPubkey
+			};
+		} catch (error) {
+>>>>>>> Stashed changes
 			await delay(2000);
 
 			return {
