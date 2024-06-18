@@ -166,6 +166,267 @@ let {
 } = {};
 // #endregion
 
+//Util Functions
+function formatElapsedTime(startTime) {
+	const currentTime = new Date();
+	const elapsedTime = currentTime - startTime; // Difference in milliseconds
+
+	let totalSeconds = Math.floor(elapsedTime / 1000);
+	let hours = Math.floor(totalSeconds / 3600);
+	totalSeconds %= 3600;
+	let minutes = Math.floor(totalSeconds / 60);
+	let seconds = totalSeconds % 60;
+
+	// Padding with '0' if necessary
+	hours = String(hours).padStart(2, "0");
+	minutes = String(minutes).padStart(2, "0");
+	seconds = String(seconds).padStart(2, "0");
+
+	console.log(`\u{23F1}  Run time: ${hours}:${minutes}:${seconds}`);
+}
+
+async function fetchPrice(tokenAddress) {
+    const response = await axios.get(`https://price.jup.ag/v6/price?ids=${tokenAddress}`);
+    const price = response.data.data[tokenAddress].price;
+    return parseFloat(price);
+}
+
+async function updateUSDVal(mintAddress, balance, decimals) {
+    try {
+        let price = await fetchPrice(mintAddress);
+        let balanceLamports = Math.floor(balance * Math.pow(10, decimals));
+        const usdBalance = balanceLamports * price;
+        const usdBalanceLamports =usdBalance / Math.pow(10, decimals);
+        return usdBalanceLamports;
+    } catch (error) {
+        // Error is not critical.
+        // Reuse the previous balances and try another update again next cycle.
+    }
+}
+
+async function fetchNewUSDValues() {
+	const tempUSDBalanceA = await updateUSDVal(
+	  selectedAddressA,
+	  currBalanceA,
+	  selectedDecimalsA
+	);
+	const tempUSDBalanceB = await updateUSDVal(
+	  selectedAddressB,
+	  currBalanceB,
+	  selectedDecimalsB
+	);
+  
+	return {
+	  newUSDBalanceA: tempUSDBalanceA ?? currUSDBalanceA,
+	  newUSDBalanceB: tempUSDBalanceB ?? currUSDBalanceB,
+	};
+}
+
+function calculateProfitOrLoss(currUsdTotalBalance, initUsdTotalBalance) {
+	const profitOrLoss = currUsdTotalBalance - initUsdTotalBalance;
+	const percentageChange = (profitOrLoss / initUsdTotalBalance) * 100;
+	return { profitOrLoss, percentageChange };
+}
+  
+function displayProfitOrLoss(profitOrLoss, percentageChange) {
+	if (profitOrLoss > 0) {
+	  console.log(
+		`Profit : ${chalk.green(`+$${profitOrLoss.toFixed(2)} (+${percentageChange.toFixed(2)}%)`)}`
+	  );
+	} else if (profitOrLoss < 0) {
+	  console.log(
+		`Loss : ${chalk.red(`-$${Math.abs(profitOrLoss).toFixed(2)} (-${Math.abs(percentageChange).toFixed(2)}%)`)}`
+	  );
+	} else {
+	  console.log(`Difference : $${profitOrLoss.toFixed(2)} (0.00%)`); // Neutral
+	}
+}
+
+async function updatePrice() {
+	let retries = 0;
+	const maxRetries = 5;
+    while (retries < maxRetries) {
+        try {
+            let newPrice = await fetchPrice(selectedAddressB);
+            if(newPrice !== undefined) {
+                lastKnownPrice = newPrice;
+                return newPrice;
+            }
+        } catch (error) {
+            console.error(`Fetch price failed. Attempt ${retries + 1} of ${maxRetries}`);
+        }
+        retries++;
+    }
+
+    if(lastKnownPrice !== null) {
+        return lastKnownPrice;
+    } else {
+        throw new Error("Unable to fetch price and no last known price available");
+    }
+}
+
+async function formatTokenPrice(price) {
+    let multiplier = 1;
+    let quantity = "";
+
+    if (price >= 1) {
+        // For prices above $1, no adjustment needed
+        return { multiplier, quantity };
+    } else {
+        // Adjust for prices below $1
+        if (price <= 0.00000001) {
+            multiplier = 100000000;
+            quantity = "per 100,000,000";
+        } else if (price <= 0.0000001) {
+            multiplier = 10000000;
+            quantity = "per 10,000,000";
+        } else if (price <= 0.000001) {
+            multiplier = 1000000;
+            quantity = "per 1,000,000";
+        } else if (price <= 0.00001) {
+            multiplier = 100000;
+            quantity = "per 100,000";
+        } else if (price <= 0.0001) {
+            multiplier = 10000;
+            quantity = "per 10,000";
+        } else if (price <= 0.001) {
+            multiplier = 1000;
+            quantity = "per 1,000";
+        } else if (price <= 0.99) {
+            multiplier = 100;
+            quantity = "per 100";
+        } else if (price >= 1) {
+            multiplier = 1; // No change needed, but included for clarity
+            quantity = ""; // No additional quantity description needed
+        }
+        return { multiplier, quantity };
+    }
+}
+
+async function getBalance(
+	payer,
+	selectedAddressA,
+	selectedAddressB,
+	selectedTokenA,
+	selectedTokenB
+) {
+	async function getSOLBalanceAndUSDC() {
+		const lamports = await connection.getBalance(payer.publicKey);
+		const solBalance = lamports / solanaWeb3.LAMPORTS_PER_SOL;
+		if (solBalance === 0) {
+			console.log(`You do not have any SOL, please check and try again.`);
+			process.exit(0);
+		}
+		let usdBalance = 0;
+		if (selectedTokenA === "SOL" || selectedTokenB === "SOL") {
+			try {
+				const queryParams = {
+					inputMint: SOL_MINT_ADDRESS,
+					outputMint: USDC_MINT_ADDRESS,
+					amount: lamports, // Amount in lamports
+					slippageBps: 0
+				};
+				const response = await axios.get(quoteurl, {
+					params: queryParams
+				});
+				usdBalance = response.data.outAmount / Math.pow(10, 6) || 0;
+				tokenRebalanceValue =
+					response.data.outAmount / (lamports / Math.pow(10, 3));
+			} catch (error) {
+				console.error("Error fetching USDC equivalent for SOL:", error);
+			}
+		}
+		return { balance: solBalance, usdBalance, tokenRebalanceValue };
+	}
+
+	async function getTokenAndUSDCBalance(mintAddress, decimals) {
+		if (
+			!mintAddress ||
+			mintAddress === "So11111111111111111111111111111111111111112"
+		) {
+			return getSOLBalanceAndUSDC();
+		}
+
+		const tokenAccounts = await getTokenAccounts(
+			connection,
+			payer.publicKey,
+			mintAddress
+		);
+		if (tokenAccounts.value.length > 0) {
+			const balance =
+				tokenAccounts.value[0].account.data.parsed.info.tokenAmount
+					.uiAmount;
+			let usdBalance = 0;
+			if (balance === 0) {
+				console.log(
+					`You do not have a balance for ${mintAddress}, please check and try again.`
+				);
+				process.exit(0);
+			}
+			if (mintAddress !== USDC_MINT_ADDRESS) {
+				const queryParams = {
+					inputMint: mintAddress,
+					outputMint: USDC_MINT_ADDRESS,
+					amount: Math.floor(balance * Math.pow(10, decimals)),
+					slippageBps: 0
+				};
+
+				try {
+					const response = await axios.get(quoteurl, {
+						params: queryParams
+					});
+					// Save USD Balance and adjust down for Lamports
+					usdBalance = response.data.outAmount / Math.pow(10, 6);
+					tokenRebalanceValue =
+						response.data.outAmount / (balance * Math.pow(10, 6));
+				} catch (error) {
+					console.error("Error fetching USDC equivalent:", error);
+					usdBalance = 1;
+				}
+			} else {
+				usdBalance = balance; // If the token is USDC, its balance is its USD equivalent
+				if (usdBalance === 0) {
+					console.log(
+						`You do not have any USDC, please check and try again.`
+					);
+					process.exit(0);
+				}
+				tokenRebalanceValue = 1;
+			}
+
+			return { balance, usdBalance, tokenRebalanceValue };
+		} else {
+			return { balance: 0, usdBalance: 0, tokenRebalanceValue: null };
+		}
+	}
+
+	const resultA = await getTokenAndUSDCBalance(
+		selectedAddressA,
+		selectedDecimalsA
+	);
+	const resultB = await getTokenAndUSDCBalance(
+		selectedAddressB,
+		selectedDecimalsB
+	);
+
+	if (resultA.balance === 0 || resultB.balance === 0) {
+		console.log(
+			"Please ensure you have a balance in both tokens to continue."
+		);
+		process.exit(0);
+	}
+
+	return {
+		balanceA: resultA.balance,
+		usdBalanceA: resultA.usdBalance,
+		tokenARebalanceValue: resultA.tokenRebalanceValue,
+		balanceB: resultB.balance,
+		usdBalanceB: resultB.usdBalance,
+		tokenBRebalanceValue: resultB.tokenRebalanceValue
+	};
+}
+
+//Initialize functions
 async function loadQuestion() {
 	try {
 		await downloadTokensList();
@@ -548,6 +809,7 @@ if (loaded === false) {
 	loadQuestion();
 }
 
+//Start Functions
 async function startInfinity() {
 	console.log(`Checking for existing orders to cancel...`);
 	await jitoController("cancel");
@@ -566,184 +828,7 @@ async function startInfinity() {
 	infinityGrid();
 }
 
-async function getBalance(
-	payer,
-	selectedAddressA,
-	selectedAddressB,
-	selectedTokenA,
-	selectedTokenB
-) {
-	async function getSOLBalanceAndUSDC() {
-		const lamports = await connection.getBalance(payer.publicKey);
-		const solBalance = lamports / solanaWeb3.LAMPORTS_PER_SOL;
-		if (solBalance === 0) {
-			console.log(`You do not have any SOL, please check and try again.`);
-			process.exit(0);
-		}
-		let usdBalance = 0;
-		if (selectedTokenA === "SOL" || selectedTokenB === "SOL") {
-			try {
-				const queryParams = {
-					inputMint: SOL_MINT_ADDRESS,
-					outputMint: USDC_MINT_ADDRESS,
-					amount: lamports, // Amount in lamports
-					slippageBps: 0
-				};
-				const response = await axios.get(quoteurl, {
-					params: queryParams
-				});
-				usdBalance = response.data.outAmount / Math.pow(10, 6) || 0;
-				tokenRebalanceValue =
-					response.data.outAmount / (lamports / Math.pow(10, 3));
-			} catch (error) {
-				console.error("Error fetching USDC equivalent for SOL:", error);
-			}
-		}
-		return { balance: solBalance, usdBalance, tokenRebalanceValue };
-	}
-
-	async function getTokenAndUSDCBalance(mintAddress, decimals) {
-		if (
-			!mintAddress ||
-			mintAddress === "So11111111111111111111111111111111111111112"
-		) {
-			return getSOLBalanceAndUSDC();
-		}
-
-		const tokenAccounts = await getTokenAccounts(
-			connection,
-			payer.publicKey,
-			mintAddress
-		);
-		if (tokenAccounts.value.length > 0) {
-			const balance =
-				tokenAccounts.value[0].account.data.parsed.info.tokenAmount
-					.uiAmount;
-			let usdBalance = 0;
-			if (balance === 0) {
-				console.log(
-					`You do not have a balance for ${mintAddress}, please check and try again.`
-				);
-				process.exit(0);
-			}
-			if (mintAddress !== USDC_MINT_ADDRESS) {
-				const queryParams = {
-					inputMint: mintAddress,
-					outputMint: USDC_MINT_ADDRESS,
-					amount: Math.floor(balance * Math.pow(10, decimals)),
-					slippageBps: 0
-				};
-
-				try {
-					const response = await axios.get(quoteurl, {
-						params: queryParams
-					});
-					// Save USD Balance and adjust down for Lamports
-					usdBalance = response.data.outAmount / Math.pow(10, 6);
-					tokenRebalanceValue =
-						response.data.outAmount / (balance * Math.pow(10, 6));
-				} catch (error) {
-					console.error("Error fetching USDC equivalent:", error);
-					usdBalance = 1;
-				}
-			} else {
-				usdBalance = balance; // If the token is USDC, its balance is its USD equivalent
-				if (usdBalance === 0) {
-					console.log(
-						`You do not have any USDC, please check and try again.`
-					);
-					process.exit(0);
-				}
-				tokenRebalanceValue = 1;
-			}
-
-			return { balance, usdBalance, tokenRebalanceValue };
-		} else {
-			return { balance: 0, usdBalance: 0, tokenRebalanceValue: null };
-		}
-	}
-
-	const resultA = await getTokenAndUSDCBalance(
-		selectedAddressA,
-		selectedDecimalsA
-	);
-	const resultB = await getTokenAndUSDCBalance(
-		selectedAddressB,
-		selectedDecimalsB
-	);
-
-	if (resultA.balance === 0 || resultB.balance === 0) {
-		console.log(
-			"Please ensure you have a balance in both tokens to continue."
-		);
-		process.exit(0);
-	}
-
-	return {
-		balanceA: resultA.balance,
-		usdBalanceA: resultA.usdBalance,
-		tokenARebalanceValue: resultA.tokenRebalanceValue,
-		balanceB: resultB.balance,
-		usdBalanceB: resultB.usdBalance,
-		tokenBRebalanceValue: resultB.tokenRebalanceValue
-	};
-}
-
-function formatElapsedTime(startTime) {
-	const currentTime = new Date();
-	const elapsedTime = currentTime - startTime; // Difference in milliseconds
-
-	let totalSeconds = Math.floor(elapsedTime / 1000);
-	let hours = Math.floor(totalSeconds / 3600);
-	totalSeconds %= 3600;
-	let minutes = Math.floor(totalSeconds / 60);
-	let seconds = totalSeconds % 60;
-
-	// Padding with '0' if necessary
-	hours = String(hours).padStart(2, "0");
-	minutes = String(minutes).padStart(2, "0");
-	seconds = String(seconds).padStart(2, "0");
-
-	console.log(`\u{23F1}  Run time: ${hours}:${minutes}:${seconds}`);
-}
-
-async function monitor() {
-	if (shutDown) return;
-	const maxRetries = 20;
-	let retries = 0;
-	await updateMainDisplay();
-	while (retries < maxRetries) {
-		try {
-			await checkOpenOrders();
-			await handleOrders(checkArray);
-			break; // Break the loop if we've successfully handled the price monitoring
-		} catch (error) {
-			console.log(error);
-			console.error(
-				`Error: Connection or Token Data Error (Monitor Price) - (Attempt ${retries + 1} of ${maxRetries})`
-			);
-			retries++;
-
-			if (retries === maxRetries) {
-				console.error(
-					"Maximum number of retries reached. Unable to retrieve data."
-				);
-				return null;
-			}
-		}
-	}
-}
-
-async function handleOrders(checkArray) {
-	if (checkArray.length !== 2) {
-		infinityGrid();
-	} else {
-		console.log("2 open orders. Waiting for change.");
-		await delay(monitorDelay);
-		await monitor();
-	}
-}
-
+//Jito Functions
 async function infinityGrid() {
 	if (shutDown) return;
 
@@ -858,206 +943,6 @@ async function infinityGrid() {
 	monitor();
 }
 
-async function fetchPrice(tokenAddress) {
-    const response = await axios.get(`https://price.jup.ag/v6/price?ids=${tokenAddress}`);
-    const price = response.data.data[tokenAddress].price;
-    return parseFloat(price);
-}
-
-async function updateUSDVal(mintAddress, balance, decimals) {
-    try {
-        let price = await fetchPrice(mintAddress);
-        let balanceLamports = Math.floor(balance * Math.pow(10, decimals));
-        const usdBalance = balanceLamports * price;
-        const usdBalanceLamports =usdBalance / Math.pow(10, decimals);
-        return usdBalanceLamports;
-    } catch (error) {
-        // Error is not critical.
-        // Reuse the previous balances and try another update again next cycle.
-    }
-}
-
-async function fetchNewUSDValues() {
-	const tempUSDBalanceA = await updateUSDVal(
-	  selectedAddressA,
-	  currBalanceA,
-	  selectedDecimalsA
-	);
-	const tempUSDBalanceB = await updateUSDVal(
-	  selectedAddressB,
-	  currBalanceB,
-	  selectedDecimalsB
-	);
-  
-	return {
-	  newUSDBalanceA: tempUSDBalanceA ?? currUSDBalanceA,
-	  newUSDBalanceB: tempUSDBalanceB ?? currUSDBalanceB,
-	};
-}
-
-function calculateProfitOrLoss(currUsdTotalBalance, initUsdTotalBalance) {
-	const profitOrLoss = currUsdTotalBalance - initUsdTotalBalance;
-	const percentageChange = (profitOrLoss / initUsdTotalBalance) * 100;
-	return { profitOrLoss, percentageChange };
-}
-  
-function displayProfitOrLoss(profitOrLoss, percentageChange) {
-	if (profitOrLoss > 0) {
-	  console.log(
-		`Profit : ${chalk.green(`+$${profitOrLoss.toFixed(2)} (+${percentageChange.toFixed(2)}%)`)}`
-	  );
-	} else if (profitOrLoss < 0) {
-	  console.log(
-		`Loss : ${chalk.red(`-$${Math.abs(profitOrLoss).toFixed(2)} (-${Math.abs(percentageChange).toFixed(2)}%)`)}`
-	  );
-	} else {
-	  console.log(`Difference : $${profitOrLoss.toFixed(2)} (0.00%)`); // Neutral
-	}
-}
-
-async function updatePrice() {
-	let retries = 0;
-	const maxRetries = 5;
-    while (retries < maxRetries) {
-        try {
-            let newPrice = await fetchPrice(selectedAddressB);
-            if(newPrice !== undefined) {
-                lastKnownPrice = newPrice;
-                return newPrice;
-            }
-        } catch (error) {
-            console.error(`Fetch price failed. Attempt ${retries + 1} of ${maxRetries}`);
-        }
-        retries++;
-    }
-
-    if(lastKnownPrice !== null) {
-        return lastKnownPrice;
-    } else {
-        throw new Error("Unable to fetch price and no last known price available");
-    }
-}
-
-async function formatTokenPrice(price) {
-    let multiplier = 1;
-    let quantity = "";
-
-    if (price >= 1) {
-        // For prices above $1, no adjustment needed
-        return { multiplier, quantity };
-    } else {
-        // Adjust for prices below $1
-        if (price <= 0.00000001) {
-            multiplier = 100000000;
-            quantity = "per 100,000,000";
-        } else if (price <= 0.0000001) {
-            multiplier = 10000000;
-            quantity = "per 10,000,000";
-        } else if (price <= 0.000001) {
-            multiplier = 1000000;
-            quantity = "per 1,000,000";
-        } else if (price <= 0.00001) {
-            multiplier = 100000;
-            quantity = "per 100,000";
-        } else if (price <= 0.0001) {
-            multiplier = 10000;
-            quantity = "per 10,000";
-        } else if (price <= 0.001) {
-            multiplier = 1000;
-            quantity = "per 1,000";
-        } else if (price <= 0.99) {
-            multiplier = 100;
-            quantity = "per 100";
-        } else if (price >= 1) {
-            multiplier = 1; // No change needed, but included for clarity
-            quantity = ""; // No additional quantity description needed
-        }
-        return { multiplier, quantity };
-    }
-}
-
-async function updateMainDisplay() {
-	console.clear();
-	console.log(`Jupgrid v${packageInfo.version}`);
-	console.log(`\u{267E}  Infinity Mode`);
-	console.log(`\u{1F4B0} Wallet: ${displayAddress}`);
-	formatElapsedTime(startTime);
-	console.log(`-`);
-	console.log(
-	  `\u{1F527} Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)}\n\u{1F3AF} ${selectedTokenB} Target Value: $${infinityTarget}\n\u{1F6A8} Stop Loss at $${stopLossUSD}\n\u{2B65} Spread: ${spread}%\n\u{1F55A} Monitor Delay: ${monitorDelay}ms`
-	);
-	try {
-	const { newUSDBalanceA, newUSDBalanceB } = await fetchNewUSDValues();
-	currUSDBalanceA = newUSDBalanceA;
-	currUSDBalanceB = newUSDBalanceB;
-	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB; // Recalculate total
-	newPrice = await updatePrice(selectedAddressB);
-	} catch (error) {
-	  // Error is not critical. Reuse the previous balances and try another update again next cycle.
-	}
-
-	if (currUsdTotalBalance < stopLossUSD) {
-	  // Emergency Stop Loss
-	  console.clear();
-	  console.log(
-		`\n\u{1F6A8} Emergency Stop Loss Triggered! - Cashing out and Exiting`
-	  );
-	  stopLoss = true;
-	  process.kill(process.pid, "SIGINT");
-	}
-
-	let {multiplier, quantity} = await formatTokenPrice(newPrice);
-	let adjustedNewPrice = newPrice * multiplier
-	let adjustedNewPriceBUp = newPriceBUp * multiplier
-	let adjustedNewPriceBDown = newPriceBDown * multiplier
-	if(iteration === 0)
-	{
-			currentTracker = new Array(50).fill(adjustedNewPrice);
-			sellPrice = new Array(50).fill(adjustedNewPriceBUp);
-			buyPrice = new Array(50).fill(adjustedNewPriceBDown);
-	}
-
-	currentTracker.splice(0,0,(adjustedNewPrice).toString())
-	currentTracker.pop();
-	buyPrice.splice(0,0,(adjustedNewPriceBDown).toString())
-	buyPrice.pop();
-	sellPrice.splice(0,0,(adjustedNewPriceBUp).toString())
-	sellPrice.pop();
-	iteration++;
-	var config = {
-		height:20,
-		colors:[
-			asciichart.blue,
-			asciichart.green,
-			asciichart.yellow,
-		]
-	}
-	console.log(`-
-Starting Balance : $${initUsdTotalBalance.toFixed(2)}
-Current Balance  : $${currUsdTotalBalance.toFixed(2)}`);
-  
-	const { profitOrLoss, percentageChange } = calculateProfitOrLoss(currUsdTotalBalance, initUsdTotalBalance);
-	displayProfitOrLoss(profitOrLoss, percentageChange);
-  
-	console.log(`Market Change %: ${(((newPrice - startPrice) / startPrice) * 100).toFixed(2)}%
-Market Change USD: ${(newPrice - startPrice).toFixed(9)}
-Performance Delta: ${(percentageChange - ((newPrice - startPrice) / startPrice) * 100).toFixed(2)}%
--
-Latest Snapshot Balance ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(currBalanceA.toFixed(5))} (Change: ${chalk.cyan((currBalanceA - initBalanceA).toFixed(5))}) - Worth: $${currUSDBalanceA.toFixed(2)}
-Latest Snapshot Balance ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(currBalanceB.toFixed(5))} (Change: ${chalk.magenta((currBalanceB - initBalanceB).toFixed(5))}) - Worth: $${currUSDBalanceB.toFixed(2)}
--
-Starting Balance A - ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(initBalanceA.toFixed(5))}
-Starting Balance B - ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(initBalanceB.toFixed(5))}
--
-Trades: ${counter}
-Rebalances: ${rebalanceCounter}
--
-Sell Order Price: ${newPriceBUp.toFixed(9)} - Selling ${chalk.magenta(Math.abs(infinitySellInputLamports / Math.pow(10, selectedDecimalsB)))} ${chalk.magenta(selectedTokenB)} for ${chalk.cyan(Math.abs(infinitySellOutputLamports / Math.pow(10, selectedDecimalsA)))} ${chalk.cyan(selectedTokenA)}
-Current Price ${quantity}:`);
-console.log(asciichart.plot([currentTracker,buyPrice,sellPrice],config));
-console.log(`Buy Order Price: ${newPriceBDown.toFixed(9)} - Buying ${chalk.magenta(Math.abs(infinityBuyOutputLamports / Math.pow(10, selectedDecimalsB)))} ${chalk.magenta(selectedTokenB)} for ${chalk.cyan(Math.abs(infinityBuyInputLamports / Math.pow(10, selectedDecimalsA)))} ${chalk.cyan(selectedTokenA)}\n`);
-}
-
 async function createTx(inAmount, outAmount, inputMint, outputMint, base) {
 	if (shutDown) return;
 
@@ -1128,76 +1013,6 @@ async function createTx(inAmount, outAmount, inputMint, outputMint, base) {
 	}
 	// If we get here, its proper broken...
 	throw new Error("Order Creation failed after maximum attempts.");
-}
-
-async function rebalanceTokens(
-	inputMint,
-	outputMint,
-	rebalanceValue,
-	rebalanceSlippageBPS,
-	quoteurl
-) {
-	if (shutDown) return;
-	const rebalanceLamports = Math.floor(rebalanceValue);
-	console.log(`Rebalancing Tokens ${chalk.cyan(selectedTokenA)} and ${chalk.magenta(selectedTokenB)}`);
-
-	try {
-		// Fetch the quote
-		const quoteResponse = await axios.get(
-			`${quoteurl}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${rebalanceLamports}&autoSlippage=true&maxAutoSlippageBps=200` //slippageBps=${rebalanceSlippageBPS}
-		);
-
-		const swapApiResponse = await fetch(
-			"https://quote-api.jup.ag/v6/swap",
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json"
-				},
-				body: JSON.stringify({
-					quoteResponse: quoteResponse.data,
-					userPublicKey: payer.publicKey,
-					wrapAndUnwrapSol: true
-				})
-			}
-		);
-
-		const { blockhash } = await connection.getLatestBlockhash();
-		const swapData = await swapApiResponse.json();
-
-		if (!swapData || !swapData.swapTransaction) {
-			throw new Error("Swap transaction data not found.");
-		}
-
-		// Deserialize the transaction correctly for a versioned message
-		const swapTransactionBuffer = Buffer.from(
-			swapData.swapTransaction,
-			"base64"
-		);
-		const transaction = VersionedTransaction.deserialize(
-			swapTransactionBuffer
-		);
-
-		transaction.recentBlockhash = blockhash;
-		transaction.sign([payer]);
-		return transaction;
-	} catch (error) {
-		console.error("Error during the transaction:", error);
-	}
-}
-
-async function checkOpenOrders() {
-	openOrders = [];
-	checkArray = [];
-
-	// Make the JSON request
-	openOrders = await limitOrder.getOrders([
-		ownerFilter(payer.publicKey, "processed")
-	]);
-
-	// Create an array to hold publicKey values
-	checkArray = openOrders.map((order) => order.publicKey.toString());
-	return checkArray;
 }
 
 async function cancelOrder(target = [], payer) {
@@ -1369,6 +1184,196 @@ Attempting to swap ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB)
 	}
 }
 
+async function rebalanceTokens(
+	inputMint,
+	outputMint,
+	rebalanceValue,
+	rebalanceSlippageBPS,
+	quoteurl
+) {
+	if (shutDown) return;
+	const rebalanceLamports = Math.floor(rebalanceValue);
+	console.log(`Rebalancing Tokens ${chalk.cyan(selectedTokenA)} and ${chalk.magenta(selectedTokenB)}`);
+
+	try {
+		// Fetch the quote
+		const quoteResponse = await axios.get(
+			`${quoteurl}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${rebalanceLamports}&autoSlippage=true&maxAutoSlippageBps=200` //slippageBps=${rebalanceSlippageBPS}
+		);
+
+		const swapApiResponse = await fetch(
+			"https://quote-api.jup.ag/v6/swap",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
+				},
+				body: JSON.stringify({
+					quoteResponse: quoteResponse.data,
+					userPublicKey: payer.publicKey,
+					wrapAndUnwrapSol: true
+				})
+			}
+		);
+
+		const { blockhash } = await connection.getLatestBlockhash();
+		const swapData = await swapApiResponse.json();
+
+		if (!swapData || !swapData.swapTransaction) {
+			throw new Error("Swap transaction data not found.");
+		}
+
+		// Deserialize the transaction correctly for a versioned message
+		const swapTransactionBuffer = Buffer.from(
+			swapData.swapTransaction,
+			"base64"
+		);
+		const transaction = VersionedTransaction.deserialize(
+			swapTransactionBuffer
+		);
+
+		transaction.recentBlockhash = blockhash;
+		transaction.sign([payer]);
+		return transaction;
+	} catch (error) {
+		console.error("Error during the transaction:", error);
+	}
+}
+//Main Loop/Display Functions
+async function monitor() {
+	if (shutDown) return;
+	const maxRetries = 20;
+	let retries = 0;
+	await updateMainDisplay();
+	while (retries < maxRetries) {
+		try {
+			await checkOpenOrders();
+			await handleOrders(checkArray);
+			break; // Break the loop if we've successfully handled the price monitoring
+		} catch (error) {
+			console.log(error);
+			console.error(
+				`Error: Connection or Token Data Error (Monitor Price) - (Attempt ${retries + 1} of ${maxRetries})`
+			);
+			retries++;
+
+			if (retries === maxRetries) {
+				console.error(
+					"Maximum number of retries reached. Unable to retrieve data."
+				);
+				return null;
+			}
+		}
+	}
+}
+
+async function updateMainDisplay() {
+	console.clear();
+	console.log(`Jupgrid v${packageInfo.version}`);
+	console.log(`\u{267E}  Infinity Mode`);
+	console.log(`\u{1F4B0} Wallet: ${displayAddress}`);
+	formatElapsedTime(startTime);
+	console.log(`-`);
+	console.log(
+	  `\u{1F527} Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)}\n\u{1F3AF} ${selectedTokenB} Target Value: $${infinityTarget}\n\u{1F6A8} Stop Loss at $${stopLossUSD}\n\u{2B65} Spread: ${spread}%\n\u{1F55A} Monitor Delay: ${monitorDelay}ms`
+	);
+	try {
+	const { newUSDBalanceA, newUSDBalanceB } = await fetchNewUSDValues();
+	currUSDBalanceA = newUSDBalanceA;
+	currUSDBalanceB = newUSDBalanceB;
+	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB; // Recalculate total
+	newPrice = await updatePrice(selectedAddressB);
+	} catch (error) {
+	  // Error is not critical. Reuse the previous balances and try another update again next cycle.
+	}
+
+	if (currUsdTotalBalance < stopLossUSD) {
+	  // Emergency Stop Loss
+	  console.clear();
+	  console.log(
+		`\n\u{1F6A8} Emergency Stop Loss Triggered! - Cashing out and Exiting`
+	  );
+	  stopLoss = true;
+	  process.kill(process.pid, "SIGINT");
+	}
+
+	let {multiplier, quantity} = await formatTokenPrice(newPrice);
+	let adjustedNewPrice = newPrice * multiplier
+	let adjustedNewPriceBUp = newPriceBUp * multiplier
+	let adjustedNewPriceBDown = newPriceBDown * multiplier
+	if(iteration === 0)
+	{
+			currentTracker = new Array(50).fill(adjustedNewPrice);
+			sellPrice = new Array(50).fill(adjustedNewPriceBUp);
+			buyPrice = new Array(50).fill(adjustedNewPriceBDown);
+	}
+
+	currentTracker.splice(0,0,(adjustedNewPrice).toString())
+	currentTracker.pop();
+	buyPrice.splice(0,0,(adjustedNewPriceBDown).toString())
+	buyPrice.pop();
+	sellPrice.splice(0,0,(adjustedNewPriceBUp).toString())
+	sellPrice.pop();
+	iteration++;
+	var config = {
+		height:20,
+		colors:[
+			asciichart.blue,
+			asciichart.green,
+			asciichart.yellow,
+		]
+	}
+	console.log(`-
+Starting Balance : $${initUsdTotalBalance.toFixed(2)}
+Current Balance  : $${currUsdTotalBalance.toFixed(2)}`);
+  
+	const { profitOrLoss, percentageChange } = calculateProfitOrLoss(currUsdTotalBalance, initUsdTotalBalance);
+	displayProfitOrLoss(profitOrLoss, percentageChange);
+  
+	console.log(`Market Change %: ${(((newPrice - startPrice) / startPrice) * 100).toFixed(2)}%
+Market Change USD: ${(newPrice - startPrice).toFixed(9)}
+Performance Delta: ${(percentageChange - ((newPrice - startPrice) / startPrice) * 100).toFixed(2)}%
+-
+Latest Snapshot Balance ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(currBalanceA.toFixed(5))} (Change: ${chalk.cyan((currBalanceA - initBalanceA).toFixed(5))}) - Worth: $${currUSDBalanceA.toFixed(2)}
+Latest Snapshot Balance ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(currBalanceB.toFixed(5))} (Change: ${chalk.magenta((currBalanceB - initBalanceB).toFixed(5))}) - Worth: $${currUSDBalanceB.toFixed(2)}
+-
+Starting Balance A - ${chalk.cyan(selectedTokenA)}: ${chalk.cyan(initBalanceA.toFixed(5))}
+Starting Balance B - ${chalk.magenta(selectedTokenB)}: ${chalk.magenta(initBalanceB.toFixed(5))}
+-
+Trades: ${counter}
+Rebalances: ${rebalanceCounter}
+-
+Sell Order Price: ${newPriceBUp.toFixed(9)} - Selling ${chalk.magenta(Math.abs(infinitySellInputLamports / Math.pow(10, selectedDecimalsB)))} ${chalk.magenta(selectedTokenB)} for ${chalk.cyan(Math.abs(infinitySellOutputLamports / Math.pow(10, selectedDecimalsA)))} ${chalk.cyan(selectedTokenA)}
+Current Price ${quantity}:`);
+console.log(asciichart.plot([currentTracker,buyPrice,sellPrice],config));
+console.log(`Buy Order Price: ${newPriceBDown.toFixed(9)} - Buying ${chalk.magenta(Math.abs(infinityBuyOutputLamports / Math.pow(10, selectedDecimalsB)))} ${chalk.magenta(selectedTokenB)} for ${chalk.cyan(Math.abs(infinityBuyInputLamports / Math.pow(10, selectedDecimalsA)))} ${chalk.cyan(selectedTokenA)}\n`);
+}
+
+async function checkOpenOrders() {
+	openOrders = [];
+	checkArray = [];
+
+	// Make the JSON request
+	openOrders = await limitOrder.getOrders([
+		ownerFilter(payer.publicKey, "processed")
+	]);
+
+	// Create an array to hold publicKey values
+	checkArray = openOrders.map((order) => order.publicKey.toString());
+	return checkArray;
+}
+
+async function handleOrders(checkArray) {
+	if (checkArray.length !== 2) {
+		infinityGrid();
+	} else {
+		console.log("2 open orders. Waiting for change.");
+		await delay(monitorDelay);
+		await monitor();
+	}
+}
+
+//End Function
 process.on("SIGINT", () => {
 	console.log("\nCTRL+C detected! Performing cleanup...");
 	shutDown = true;
