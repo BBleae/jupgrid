@@ -27,7 +27,6 @@ import {
 	questionAsync,
 	rl
 } from './utils.js';
-import logger from './logger.js';
 import {
     jitoController,
 } from './jito_utils.js';
@@ -81,18 +80,6 @@ const quoteurl = "https://quote-api.jup.ag/v6/quote";
 
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112";
-
-// Save the original console.log function
-const originalConsoleLog = console.log;
-
-// Override console.log
-console.log = function(message) {
-  // Log the message to the console as usual
-  originalConsoleLog(message);
-
-  // Also log message to the file
-  logger.info(message);
-};
 // #endregion
 
 
