@@ -1,5 +1,5 @@
 
-## Jupgrid: Decentralized Grid Trading Bot Version 0.5.2 Beta
+## Jupgrid: Decentralized Grid Trading Bot Version 0.5.3 Beta
 
 
 ![GitHub last commit](https://img.shields.io/github/last-commit/ARBProtocol/jupgrid) ![GitHub issues](https://img.shields.io/github/issues/ARBProtocol/jupgrid) ![GitHub number of milestones](https://img.shields.io/github/milestones/all/ARBProtocol/jupgrid) ![GitHub stars](https://img.shields.io/github/stars/ARBProtocol/jupgrid?style=social)
@@ -52,14 +52,17 @@ This will generate a `.env` file where you will fill in your secure data.
 
 4. **Start JupGrid!** Start JupGrid a 3rd time with `node .` and this time you will be prompted to enter the password you entered previously. You will then be show the start-up prompts, which allow you to modify the following parameters:
 
-    - Token A:
-    - Token B:
-    - Infinity Target Value: (Maximum $ value of Token B you want to hold - Dont set this higher than your TokenA+B value!)
+    - Token A: (Case Sensitive. Currently only USDC during beta testing.)
+    - Token B: (Case Sensitive. SOL, Bonk, $MOTHER etc. The token name is required vertbatim)
+    - Mode: Classic or Infinity Mode. (Standard Grid Trading, with a fixed dollar amount per trade, or Infinity Mode, which uses dynamic values to keep your tokenB value at your set target.)
+    - Order Size: $ size of orders. (Used in Classic Mode)
+    - Infinity Target Value: (Maximum $ value of Token B you want to hold - Dont set this higher than your TokenA+B value!) - (Only used in Infinity Mode) 
     - Spread (% difference from current market price to orders):
     - Stop Loss ($ value for BOTH Token A and Token B - If your wallet hits this value, the script will stop for safety)
+    - Jito Max Fee: This is the maximum fee (in SOL) you tip to Jito for including your transactions in the block.
     - Delay (This is used to stop you getting rate-limited by Jupiter API. JupGrid is a "slow" bot, and thus doesnt need information every second).
 
-Jupgrid will then place one buy and one sell order based on the parameters you have set.
+Jupgrid will then place buy and sell orders based on the parameters you have set.
 
 ## Configuration ⚙️
 
