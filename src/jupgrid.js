@@ -1,36 +1,22 @@
 // #region imports
+
+//External Imports
 import axios from 'axios';
 import chalk from 'chalk';
 import fetch from 'cross-fetch';
 import * as fs from 'fs';
-
-import {
-	LimitOrderProvider,
-	ownerFilter
-} from '@jup-ag/limit-order-sdk';
-import * as solanaWeb3 from '@solana/web3.js';
-import {
-	Connection,
-	VersionedTransaction
-} from '@solana/web3.js';
-
-import {
-	envload,
-	loaduserSettings,
-	saveuserSettings
-} from './settings.js';
-import {
-	delay,
-	downloadTokensList,
-	getTokenAccounts,
-	getTokens,
-	questionAsync,
-	rl
-} from './utils.js';
-import {
-    jitoController,
-} from './jito_utils.js';
 import asciichart from 'asciichart'
+import inquirer from 'inquirer';
+import { LimitOrderProvider, ownerFilter } from '@jup-ag/limit-order-sdk';
+import * as solanaWeb3 from '@solana/web3.js';
+import { Connection, VersionedTransaction } from '@solana/web3.js';
+
+// Local Imports
+import { envload, loaduserSettings, saveuserSettings } from './settings.js';
+import { delay, downloadTokensList, getTokenAccounts, getTokens, questionAsync, rl} from './utils.js';
+import { jitoController } from './jito_utils.js';
+
+//import { token } from '@project-serum/anchor/dist/cjs/utils/index.js';
 // #endregion
 
 // #region exports
@@ -96,6 +82,7 @@ let {
 	validSpread = null,
 	stopLossUSD = null,
 	infinityTarget = null,
+	orderSize = null,
 	loaded = false,
 	openOrders = [],
 	checkArray = [],
@@ -137,6 +124,7 @@ let {
 	sellPrice = null,
 	buyPrice = null,
 	iteration = 0,
+	gridMode = null,
 	userSettings = {
 		selectedTokenA: null,
 		selectedTokenB: null,
@@ -148,7 +136,7 @@ let {
 		monitorDelay: null,
 		stopLossUSD: null,
 		infinityTarget: null,
-		infinityMode: null
+		gridMode: null
 	}
 } = {};
 // #endregion
@@ -413,7 +401,9 @@ async function getBalance(
 	};
 }
 
-//Initialize functions
+// Initialize functions
+
+/*
 async function loadQuestion() {
 	try {
 		await downloadTokensList();
@@ -794,8 +784,405 @@ Your Token Selection for B - Symbol: ${chalk.magenta(selectedTokenB)}, Address: 
 
 if (loaded === false) {
 	loadQuestion();
+} 
+*/
+
+async function loadQuestion() {
+    try {
+        await downloadTokensList();
+        console.log("Updated Token List\n");
+        console.log(`Connected Wallet: ${displayAddress}\n`);
+
+        if (!fs.existsSync("userSettings.json")) {
+            console.log("No user data found. Starting with fresh inputs.");
+            initialize();
+        } else {
+            const askForLoadSettings = () => {
+                rl.question(
+                    "Do you wish to load your saved settings? (Y/N): ",
+                    function (responseQ) {
+                        responseQ = responseQ.toUpperCase(); // Case insensitivity
+
+                        if (responseQ === "Y") {
+                            try {
+                                // Show user data
+                                const userSettings = loaduserSettings();
+                                // Check if the saved version matches the current version
+                                if (userSettings.configVersion !== currentVersion) {
+                                    console.log(`Version mismatch detected. Your settings version: ${userSettings.configVersion}, current version: ${currentVersion}.`);
+                                    console.log("Changing to blank settings, please continue.\n");
+                                    initialize(); // Example action: re-initialize with fresh settings
+                                    return;
+                                }
+                                console.log("User data loaded successfully.");
+    console.log(
+        `\nPrevious JupGrid Settings:
+Version: ${userSettings.configVersion}
+Token A: ${chalk.cyan(userSettings.selectedTokenA)}
+Token B: ${chalk.magenta(userSettings.selectedTokenB)}
+${userSettings.gridMode === 'infinity grid' ? `Token B Target Value: ${userSettings.infinityTarget}` : ''}
+Spread: ${userSettings.spread}%
+Stop Loss: ${userSettings.stopLossUSD}
+Maximum Jito Tip: ${userSettings.maxJitoTip} SOL
+Monitoring delay: ${userSettings.monitorDelay}ms
+Grid Mode: ${userSettings.gridMode}
+${userSettings.gridMode === 'infinity grid' ? `Infinity Target: ${userSettings.infinityTarget}` : `Order Size: ${userSettings.orderSize}`}\n`
+    );
+                                // Prompt for confirmation to use these settings
+                                rl.question(
+                                    "Proceed with these settings? (Y/N): ",
+                                    function (confirmResponse) {
+                                        confirmResponse = confirmResponse.toUpperCase();
+                                        if (confirmResponse === "Y") {
+                                            // Apply loaded settings
+                                            ({
+                                                currentVersion,
+                                                selectedTokenA,
+                                                selectedAddressA,
+                                                selectedDecimalsA,
+                                                selectedTokenB,
+                                                selectedAddressB,
+                                                selectedDecimalsB,
+                                                spread,
+                                                monitorDelay,
+                                                stopLossUSD,
+                                                maxJitoTip,
+                                                infinityTarget,
+                                                gridMode,
+                                                orderSize
+                                            } = userSettings);
+                                            console.log("Settings applied successfully!");
+                                            initialize();
+                                        } else if (confirmResponse === "N") {
+                                            console.log("Discarding saved settings, please continue.");
+                                            initialize(); // Start initialization with blank settings
+                                        } else {
+                                            console.log("Invalid response. Please type 'Y' or 'N'.");
+                                            askForLoadSettings(); // Re-ask the original question
+                                        }
+                                    }
+                                );
+                            } catch (error) {
+                                console.error(`Failed to load settings: ${error}`);
+                                initialize(); // Proceed with initialization in case of error
+                            }
+                        } else if (responseQ === "N") {
+                            console.log("Starting with blank settings.");
+                            initialize();
+                        } else {
+                            console.log("Invalid response. Please type 'Y' or 'N'.");
+                            askForLoadSettings(); // Re-ask if the response is not Y/N
+                        }
+                    }
+                );
+            };
+
+            askForLoadSettings(); // Start the question loop
+        }
+    } catch (error) {
+        console.error("Error:", error);
+    }
 }
 
+async function initialize() {
+    tokens = await getTokens();
+
+    if (selectedTokenA != null) {
+        validTokenA = true;
+    }
+
+    if (selectedTokenB != null) {
+        validTokenB = true;
+    }
+
+    if (spread != null) {
+        validSpread = true;
+    }
+
+    let validMonitorDelay = false;
+    if (monitorDelay >= 1000) {
+        validMonitorDelay = true;
+    }
+
+    let validStopLossUSD = false;
+    if (stopLossUSD != null) {
+        validStopLossUSD = true;
+    }
+
+    let validJitoMaxTip = false;
+    if (maxJitoTip != null) {
+        validJitoMaxTip = true;
+    }
+
+    let validInfinityTarget = false;
+    if (infinityTarget != null) {
+        validInfinityTarget = true;
+    }
+
+    if (userSettings.selectedTokenA) {
+        const tokenAExists = tokens.some(
+            (token) => token.symbol === userSettings.selectedTokenA
+        );
+        if (!tokenAExists) {
+            console.log(
+                `Token ${userSettings.selectedTokenA} from user data not found in the updated token list. Please re-enter.`
+            );
+            userSettings.selectedTokenA = null;
+            userSettings.selectedAddressA = null;
+            userSettings.selectedDecimalsA = null;
+        } else {
+            validTokenA = true;
+        }
+    }
+
+    while (!validTokenA) {
+        console.log("\nDuring this Beta stage, we are only allowing USDC as Token A. Is that ok?");
+        let answer = 'USDC';
+
+        const token = tokens.find((t) => t.symbol === answer);
+        if (token) {
+            console.log(`Selected Token: ${token.symbol}
+Token Address: ${token.address}
+Token Decimals: ${token.decimals}`);
+            const confirmAnswer = await questionAsync(
+                `Is this the correct token? (Y/N): `
+            );
+            if (
+                confirmAnswer.toLowerCase() === "y" ||
+                confirmAnswer.toLowerCase() === "yes"
+            ) {
+                validTokenA = true;
+                selectedTokenA = token.symbol;
+                selectedAddressA = token.address;
+                selectedDecimalsA = token.decimals;
+            }
+        } else { 
+            console.log(`Token ${answer} not found. Please Try Again.`);
+        }
+    }
+
+    if (userSettings.selectedTokenB) {
+        const tokenBExists = tokens.some(
+            (token) => token.symbol === userSettings.selectedTokenB
+        );
+        if (!tokenBExists) {
+            console.log(
+                `Token ${userSettings.selectedTokenB} from user data not found in the updated token list. Please re-enter.`
+            );
+            userSettings.selectedTokenB = null;
+            userSettings.selectedAddressB = null;
+            userSettings.selectedDecimalsB = null;
+        } else {
+            validTokenB = true;
+        }
+    }
+
+    while (!validTokenB) {
+        const answer = await questionAsync(
+            `\nPlease Enter The Second Token Symbol (B) (Case Sensitive): `
+        );
+        const token = tokens.find((t) => t.symbol === answer);
+        if (token) {
+            console.log(`Selected Token: ${token.symbol}
+Token Address: ${token.address}
+Token Decimals: ${token.decimals}`);
+            const confirmAnswer = await questionAsync(
+                `Is this the correct token? (Y/N): `
+            );
+            if (
+                confirmAnswer.toLowerCase() === "y" ||
+                confirmAnswer.toLowerCase() === "yes"
+            ) {
+                validTokenB = true;
+                selectedTokenB = token.symbol;
+                selectedAddressB = token.address;
+                selectedDecimalsB = token.decimals;
+            }
+        } else {
+            console.log(`Token ${answer} not found. Please Try Again.`);
+        }
+    }
+
+    // New prompt for grid mode
+    if (!gridMode) {
+        while (!gridMode) {
+            const modeAnswer = await questionAsync("Choose grid mode: (1) Infinity Grid, (2) Classic Grid: ");
+            switch (modeAnswer.trim()) {
+                case '1':
+                    gridMode = 'infinity grid';
+                    break;
+                case '2':
+                    gridMode = 'classic grid';
+                    break;
+                default:
+                    console.log("Invalid input. Please enter '1' for Infinity Grid or '2' for Classic Grid.");
+            }
+        }
+    }
+	console.log(`ordersize: ${orderSize}`)
+	console.log(`infinitytarget: ${infinityTarget}`)
+    // Only ask for infinity target or order size if they're not already set
+    if (gridMode === "infinity grid" && !infinityTarget) {
+        let validInfinityTarget = false;
+        while (!validInfinityTarget) {
+            const infinityTargetInput = await questionAsync("\nWhat is the infinity target (in USD)? ");
+            infinityTarget = Math.floor(parseFloat(infinityTargetInput));
+            if (!isNaN(infinityTarget) && Number.isInteger(infinityTarget) && infinityTarget > 0) {
+                userSettings.infinityTarget = infinityTarget;
+                validInfinityTarget = true;
+            } else {
+                console.log("Invalid infinity target value. Please enter a valid positive integer.");
+            }
+        }
+        userSettings.orderSize = undefined; // Reset order size for Infinity Grid mode
+    } else if (gridMode === "classic grid" && !orderSize) {
+        let validOrderSize = false;
+        while (!validOrderSize) {
+            const orderSizeInput = await questionAsync("\nWhat is the order size (in USD)? ");
+            orderSize = parseFloat(orderSizeInput);
+            if (!isNaN(orderSize) && orderSize > 0) {
+                userSettings.orderSize = orderSize;
+                validOrderSize = true;
+            } else {
+                console.log("Invalid order size. Please enter a positive number.");
+            }
+        }
+        userSettings.infinityTarget = undefined; // Reset infinity target for Classic Grid mode
+    }
+
+    // Ask user for spread %
+    if (userSettings.spread) {
+        validSpread = !isNaN(parseFloat(userSettings.spread));
+        if (!validSpread) {
+            console.log(
+                "Invalid spread percentage found in user data. Please re-enter."
+            );
+            userSettings.spread = null;
+        } else validSpread = true;
+    }
+
+    while (!validSpread) {
+        const spreadInput = await questionAsync(
+            `\nWhat % Spread Difference Between Market and Orders?
+Recommend >0.3% to cover Jupiter Fees, but 1% or greater for best performance:`
+        );
+        spread = parseFloat(spreadInput);
+        if (!isNaN(spread)) {
+            userSettings.spread = spread;
+            validSpread = true;
+        } else {
+            console.log(
+                "Invalid spread percentage. Please enter a valid number (No % Symbol)."
+            );
+        }
+    }
+
+    if (userSettings.stopLossUSD) {
+        validStopLossUSD = !isNaN(parseFloat(userSettings.stopLossUSD));
+        if (!validStopLossUSD) {
+            console.log(
+                "Invalid stop loss value found in user data. Please re-enter."
+            );
+            userSettings.stopLossUSD = null;
+        } else validStopLossUSD = true;
+    }
+
+    while (!validStopLossUSD) {
+        const stopLossUSDInput = await questionAsync(
+            `\nPlease Enter the Stop Loss Value in USD: 
+(Enter 0 for no stoploss) `
+        );
+        stopLossUSD = parseFloat(stopLossUSDInput);
+        if (!isNaN(stopLossUSD)) {
+            userSettings.stopLossUSD = stopLossUSD;
+            validStopLossUSD = true;
+        } else {
+            console.log(
+                "Invalid stop loss value. Please enter a valid number."
+            );
+        }
+    }
+
+    while (!validJitoMaxTip) {
+        const maxJitoTipQuestion = await questionAsync(
+            `\nEnter the maximum Jito tip in SOL
+This is the maximum tip you are willing to pay for a Jito order,
+However, we use a dynamic tip based on the last 30 minute average tip.
+(Default 0.0002 SOL, Minimum 0.00001): `
+        );
+        if (maxJitoTipQuestion.trim() === '') {
+            maxJitoTip = 0.0002;
+            validJitoMaxTip = true;
+        } else {
+            const parsedMaxJitoTip = parseFloat(maxJitoTipQuestion.trim());
+            if (!isNaN(parsedMaxJitoTip) && parsedMaxJitoTip >= 0.00001) {
+                maxJitoTip = parsedMaxJitoTip;
+                validJitoMaxTip = true;
+            } else {
+                console.log(
+                    "Invalid Jito tip. Please enter a valid number greater than or equal to 0.00001."
+                );
+            }
+        }
+    }
+
+    while (!validMonitorDelay) {
+        const monitorDelayQuestion = await questionAsync(
+            `\nEnter the delay between price checks in milliseconds.
+(minimum 100ms, recommended/default > 5000ms): `
+        );
+        if (monitorDelayQuestion.trim() === '') {
+            monitorDelay = 5000;
+            validMonitorDelay = true;
+        } else {
+            const parsedMonitorDelay = parseInt(monitorDelayQuestion.trim());
+            if (!isNaN(parsedMonitorDelay) && parsedMonitorDelay >= 100) {
+                monitorDelay = parsedMonitorDelay;
+                validMonitorDelay = true;
+            } else {
+                console.log(
+                    "Invalid monitor delay. Please enter a valid number greater than or equal to 1000."
+                );
+            }
+        }
+    }
+
+    spreadbps = spread * 100;
+
+    saveuserSettings(
+        configVersion,
+        selectedTokenA,
+        selectedAddressA,
+        selectedDecimalsA,
+        selectedTokenB,
+        selectedAddressB,
+        selectedDecimalsB,
+        spread,
+        monitorDelay,
+        stopLossUSD,
+        maxJitoTip,
+        gridMode,
+        infinityTarget,
+        orderSize
+    );
+
+    // First Price check during init
+    console.log("Getting Latest Price Data...");
+    newPrice = await fetchPrice(selectedAddressB);
+    startPrice = newPrice;
+
+    console.clear();
+    console.log(`Starting JupGrid v${packageInfo.version};
+Your Token Selection for A - Symbol: ${chalk.cyan(selectedTokenA)}, Address: ${chalk.cyan(selectedAddressA)}
+Your Token Selection for B - Symbol: ${chalk.magenta(selectedTokenB)}, Address: ${chalk.magenta(selectedAddressB)}
+Grid Mode: ${gridMode}
+${gridMode === 'infinity grid' ? `Infinity Target: $${userSettings.infinityTarget}` : `Order Size: $${userSettings.orderSize}`}`);
+    startInfinity();
+}
+
+if (loaded === false) {
+    loadQuestion();
+}
 //Start Functions
 async function startInfinity() {
 	console.log(`Checking for existing orders to cancel...`);
@@ -812,7 +1199,13 @@ async function startInfinity() {
 	initBalanceB = initialBalances.balanceB;
 	initUsdBalanceB = initialBalances.usdBalanceB;
 	initUsdTotalBalance = initUsdBalanceA + initUsdBalanceB;
+	if (gridMode === "infinity grid") {
+	console.log(`Starting Infinity Grid`)
 	infinityGrid();
+	} else {
+	console.log("Starting Classic Grid")
+	fixedDollarGrid();
+	}
 }
 
 //Jito Functions
@@ -898,30 +1291,121 @@ async function infinityGrid() {
 		console.log("Token A Balance not enough to place Buy Order. Exiting.");
 		process.kill(process.pid, "SIGINT");
 	}
-    // Log the values
 
-	/*
-    console.log(`TokenA Balance: ${balanceA}`);
-    console.log(`TokenA Balance Lamports: ${balanceALamports}`);
-    console.log(`TokenB Balance: ${balanceB}`);
-    console.log(`TokenB Balance Lamports: ${balanceBLamports}`);
-    console.log(`TokenB Balance USD: ${currentValueUSD}`);
-    console.log(`Infinity Target: ${infinityTarget}`);
-    console.log(`Market Price: ${marketPrice.toFixed(2)}`);
-    console.log(`Market Price Up: ${newPriceBUp.toFixed(2)}`);
-    console.log(`Derived Market Price Up: ${derivedMarketPriceUp.toFixed(2)}`);
-    console.log(`Market Price Down: ${newPriceBDown.toFixed(2)}`);
-    console.log(`Derived Market Price Down: ${derivedMarketPriceDown.toFixed(2)}`);
-    console.log(`Target Value of TokenB in USD Up: ${targetValueUSDUp}`);
-    console.log(`Target Value of TokenB in USD Down: ${targetValueUSDDown}`);
-    console.log(`Lamports to Sell: ${lamportsToSell}`);
-    console.log(`Expected USDC for Sell: ${expectedUSDCForSell}`);
-    console.log(`USDC Lamports for Sell ${expectedUSDCForSellLamports}`);
-    console.log(`Lamports to Buy: ${lamportsToBuy}`);
-    console.log(`Expected USDC for Buy: ${expectedUSDCForBuy}`);
-    console.log(`USDC Lamports for Buy ${expectedUSDCForBuyLamports}\n`);
-	*/
+	await jitoController("infinity");
+	console.log(
+		"Pause for 5 seconds to allow orders to finalize on blockchain.",
+		await delay(5000)
+	);
+	monitor();
+}
+
+async function fixedDollarGrid() {
+	if (shutDown) return;
+	// Increment trades counter
+	counter++;
+	// Cancel any existing orders
+	await jitoController("cancel");
+	// Check to see if we need to rebalance
+	await jitoController("rebalance");
+	askForRebalance = false;
+	let tokenPriceA;
+	let tokenPriceB;
+	//Get token prices
+	if (selectedTokenA === "USDC") {
+	  tokenPriceA = 1;
+	} else {
+	  tokenPriceA = await fetchPrice(selectedAddressA);
+	}
+	tokenPriceB = await fetchPrice(selectedAddressB);
+  
+	const spreadPercentage = spreadbps / 10000;
+  
+	newPriceBUp = tokenPriceB * (1 + spreadPercentage);
+	newPriceBDown = tokenPriceB * (1 - spreadPercentage);
+  
+	//Get user balances
+	const { balanceA, balanceB } = await getBalance(payer, selectedAddressA, selectedAddressB, selectedTokenA, selectedTokenB);
+	let balanceALamports = balanceA * Math.pow(10, selectedDecimalsA);
+	let balanceBLamports = balanceB * Math.pow(10, selectedDecimalsB);
+	console.log(`Balance A: ${balanceA}`);
+	console.log(`Balance B: ${balanceB}`);
+	console.log(`Balance A Lamports: ${balanceALamports}`);
+	console.log(`Balance B Lamports: ${balanceBLamports}`);
+	//Calculate fixed dollar trade for spread change ($10 order for testing)
+	const fixedDollarAmount = orderSize; // Adjust this value to your desired fixed dollar amount
+	const fixedDollarBUp = fixedDollarAmount / newPriceBUp;
+	const fixedDollarBDown = fixedDollarAmount / newPriceBDown;
+  
+	// Calculate the expected tokenA amounts based on the fixed dollar amounts and tokenB prices
+	const expectedTokenAUp = fixedDollarBUp * newPriceBUp;
+	const expectedTokenADown = fixedDollarBDown * newPriceBDown;
+
+	// Calculate market prices from order sizes
+	const marketPriceBUp = expectedTokenAUp / fixedDollarBUp;
+	const marketPriceBDown = expectedTokenADown / fixedDollarBDown;
+
+	// Compare calculated market prices with the expected tokenB prices
+	const priceTolerancePercentage = 0.01; // Adjust this value to set the tolerance for price deviation
+	const isPriceBUpMatched = Math.abs(marketPriceBUp - newPriceBUp) / newPriceBUp <= priceTolerancePercentage;
+	const isPriceBDownMatched = Math.abs(marketPriceBDown - newPriceBDown) / newPriceBDown <= priceTolerancePercentage;
+
+	if (isPriceBUpMatched && isPriceBDownMatched) {
+		console.log("Market prices match the expected tokenB prices.");
+		console.log("Calculated market price for B Up:", marketPriceBUp);
+		console.log("Expected tokenB price for Up:", newPriceBUp);
+		console.log("Calculated market price for B Down:", marketPriceBDown);
+		console.log("Expected tokenB price for Down:", newPriceBDown);
+	} else {
+		console.log("Market prices do not match the expected tokenB prices.");
+		console.log("Calculated market price for B Up:", marketPriceBUp);
+		console.log("Expected tokenB price for Up:", newPriceBUp);
+		console.log("Calculated market price for B Down:", marketPriceBDown);
+		console.log("Expected tokenB price for Down:", newPriceBDown);
+	}
+
+	// Convert input and output values to lamports
+	const lamportsPerTokenA = Math.pow(10, selectedDecimalsA);
+	const lamportsPerTokenB = Math.pow(10, selectedDecimalsB);
+
+	const tokenBInputLamports = Math.round(fixedDollarBUp * lamportsPerTokenB);
+	const tokenAOutputLamports = Math.round(expectedTokenAUp * lamportsPerTokenA);
+	const tokenAInputLamports = Math.round(expectedTokenADown * lamportsPerTokenA);
+	const tokenBOutputLamports = Math.round(fixedDollarBDown * lamportsPerTokenB);
+
+	// Display trade order inputs and outputs in lamports
+	console.log("\nTrade Order Inputs and Outputs (in Lamports):");
+	console.log("Market Sell (Price Up):");
+	console.log("  TokenB Input:", tokenBInputLamports);
+	console.log("  TokenA Output:", tokenAOutputLamports);
+	console.log("Market Buy (Price Down):");
+	console.log("  TokenA Input:", tokenAInputLamports);
+	console.log("  TokenB Output:", tokenBOutputLamports);
+
+	// Calculate the profit in tokenB lamports
+	const profitTokenBLamports = tokenBOutputLamports - tokenBInputLamports;
+	console.log("\nProfit in TokenB (in Lamports):", profitTokenBLamports);
+	// Calculate the profit in dollars
+	const profitTokenB = profitTokenBLamports / lamportsPerTokenB;
+	const profitDollars = profitTokenB * tokenPriceB;
+	console.log("Profit in TokenB:", profitTokenB);
+	console.log("Profit in Dollars:", profitDollars);
 	
+	infinityBuyInputLamports = tokenAInputLamports;
+	infinityBuyOutputLamports = tokenBOutputLamports;
+	infinitySellInputLamports = tokenBInputLamports;
+	infinitySellOutputLamports = tokenAOutputLamports;
+
+	// Check if the balances are enough to place the orders (With a 5% buffer)
+	if (infinitySellInputLamports > balanceBLamports * 1.05) {
+		console.log("Token B Balance not enough to place Sell Order. Exiting.");
+		process.kill(process.pid, "SIGINT");
+	}
+	if (infinityBuyInputLamports > balanceALamports * 1.05) {
+		console.log("Token A Balance not enough to place Buy Order. Exiting.");
+		process.kill(process.pid, "SIGINT");
+	}
+
 	await jitoController("infinity");
 	console.log(
 		"Pause for 5 seconds to allow orders to finalize on blockchain.",
@@ -1050,125 +1534,156 @@ async function cancelOrder(target = [], payer) {
 }
 
 async function balanceCheck() {
-	console.log("Checking Portfolio, we will rebalance if necessary.");
-	const currentBalances = await getBalance(
-	  payer,
-	  selectedAddressA,
-	  selectedAddressB,
-	  selectedTokenA,
-	  selectedTokenB
-	);
-  
-	currBalanceA = currentBalances.balanceA;
-	currBalanceB = currentBalances.balanceB;
-	currUSDBalanceA = currentBalances.usdBalanceA;
-	currUSDBalanceB = currentBalances.usdBalanceB;
-	currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB;
-	tokenARebalanceValue = currentBalances.tokenARebalanceValue;
-	tokenBRebalanceValue = currentBalances.tokenBRebalanceValue;
-	let currBalanceALamports = currBalanceA * Math.pow(10, selectedDecimalsA);
-	let currBalanceBLamports = currBalanceB * Math.pow(10, selectedDecimalsB);
-	if (currUsdTotalBalance < infinityTarget) {
-	  console.log(
-		`Your total balance is not high enough for your Token B Target Value. Please either increase your wallet balance or reduce your target.`
-	  );
-	  process.exit(0);
-	}
-	const targetUsdBalancePerToken = infinityTarget;
-	const percentageDifference = Math.abs(
-	  (currUSDBalanceB - targetUsdBalancePerToken) / targetUsdBalancePerToken
-	);
-	if (percentageDifference > 0.03) {
-	  if (currUSDBalanceB < targetUsdBalancePerToken) {
-		const deficit =
-		  (targetUsdBalancePerToken - currUSDBalanceB) *
-		  Math.pow(10, selectedDecimalsA);
-		adjustmentA = Math.floor(
-		  Math.abs((-1 * deficit) / tokenARebalanceValue)
-		);
-	  } else if (currUSDBalanceB > targetUsdBalancePerToken) {
-		const surplus =
-		  (currUSDBalanceB - targetUsdBalancePerToken) *
-		  Math.pow(10, selectedDecimalsB);
-		adjustmentB = Math.floor(
-		  Math.abs(-1 * (surplus / tokenBRebalanceValue))
-		);
-	  }
-	} else {
-	  console.log("Token B $ value within 3% of target, skipping rebalance.");
-	  return "skip";
-	}
-	const rebalanceSlippageBPS = 200;
-  
-	const confirmTransaction = async () => {
-		if (!askForRebalance) {
-			return true;
-		}
-		const answer = await questionAsync('Do you want to proceed with this transaction? (Y/n) ');
-		if (answer.toUpperCase() === 'N') {
-		  console.log('Transaction cancelled by user. Closing program.');
-		  process.exit(0);
-		} else {
-			askForRebalance = false;
-		  return true;
-		}
-	  };
-  
-	if (adjustmentA > 0) {
-		if (adjustmentA > currBalanceALamports) {
-			console.log(adjustmentA);
-			console.log(currBalanceALamports);
-			console.log(
-				`You do not have enough ${selectedTokenA} to rebalance. There has been an error.
+    console.log("Checking Portfolio, we will rebalance if necessary.");
+    const currentBalances = await getBalance(
+        payer,
+        selectedAddressA,
+        selectedAddressB,
+        selectedTokenA,
+        selectedTokenB
+    );
+
+    currBalanceA = currentBalances.balanceA;
+    currBalanceB = currentBalances.balanceB;
+    currUSDBalanceA = currentBalances.usdBalanceA;
+    currUSDBalanceB = currentBalances.usdBalanceB;
+    currUsdTotalBalance = currUSDBalanceA + currUSDBalanceB;
+    tokenARebalanceValue = currentBalances.tokenARebalanceValue;
+    tokenBRebalanceValue = currentBalances.tokenBRebalanceValue;
+    let currBalanceALamports = currBalanceA * Math.pow(10, selectedDecimalsA);
+    let currBalanceBLamports = currBalanceB * Math.pow(10, selectedDecimalsB);
+
+    if (gridMode === "infinity grid") {
+        // Existing Infinity Grid logic
+        if (currUsdTotalBalance < infinityTarget) {
+            console.log(
+                `Your total balance is not high enough for your Token B Target Value. Please either increase your wallet balance or reduce your target.`
+            );
+            process.exit(0);
+        }
+        const targetUsdBalancePerToken = infinityTarget;
+        const percentageDifference = Math.abs(
+            (currUSDBalanceB - targetUsdBalancePerToken) / targetUsdBalancePerToken
+        );
+        if (percentageDifference > 0.03) {
+            if (currUSDBalanceB < targetUsdBalancePerToken) {
+                const deficit =
+                    (targetUsdBalancePerToken - currUSDBalanceB) *
+                    Math.pow(10, selectedDecimalsA);
+                adjustmentA = Math.floor(
+                    Math.abs((-1 * deficit) / tokenARebalanceValue)
+                );
+            } else if (currUSDBalanceB > targetUsdBalancePerToken) {
+                const surplus =
+                    (currUSDBalanceB - targetUsdBalancePerToken) *
+                    Math.pow(10, selectedDecimalsB);
+                adjustmentB = Math.floor(
+                    Math.abs(-1 * (surplus / tokenBRebalanceValue))
+                );
+            }
+        } else {
+            console.log("Token B $ value within 3% of target, skipping rebalance.");
+            return "skip";
+        }
+    } else if (gridMode === "classic grid") {
+        // Classic Grid logic
+        const targetUsdBalancePerToken = currUsdTotalBalance / 2;
+        const percentageDifference = Math.abs(
+            (currUSDBalanceA - targetUsdBalancePerToken) / targetUsdBalancePerToken
+        );
+        if (percentageDifference > 0.03) {
+            if (currUSDBalanceA > targetUsdBalancePerToken) {
+                const surplus =
+                    (currUSDBalanceA - targetUsdBalancePerToken) *
+                    Math.pow(10, selectedDecimalsA);
+                adjustmentA = Math.floor(
+                    Math.abs(surplus / tokenARebalanceValue)
+                );
+            } else {
+                const deficit =
+                    (targetUsdBalancePerToken - currUSDBalanceA) *
+                    Math.pow(10, selectedDecimalsB);
+                adjustmentB = Math.floor(
+                    Math.abs(deficit / tokenBRebalanceValue)
+                );
+            }
+        } else {
+            console.log("Token balances within 3% of equal value, skipping rebalance.");
+            return "skip";
+        }
+    }
+
+    const rebalanceSlippageBPS = 200;
+
+    const confirmTransaction = async () => {
+        if (!askForRebalance) {
+            return true;
+        }
+        const answer = await questionAsync('Do you want to proceed with this transaction? (Y/n) ');
+        if (answer.toUpperCase() === 'N') {
+            console.log('Transaction cancelled by user. Closing program.');
+            process.exit(0);
+        } else {
+            askForRebalance = false;
+            return true;
+        }
+    };
+
+    if (adjustmentA > 0) {
+        if (adjustmentA > currBalanceALamports) {
+            console.log(adjustmentA);
+            console.log(currBalanceALamports);
+            console.log(
+                `You do not have enough ${selectedTokenA} to rebalance. There has been an error.
 Attempting to swap ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)}`
-			);
-			process.exit(0);
-		}
-	  console.log(
-		`Need to trade ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)} to balance.`
-	  );
-	  const userConfirmation = await confirmTransaction();
-	  if (userConfirmation) {
-		const rebalanceTx = await rebalanceTokens(
-		  selectedAddressA,
-		  selectedAddressB,
-		  adjustmentA,
-		  rebalanceSlippageBPS,
-		  quoteurl
-		);
-		return rebalanceTx;
-	  } else {
-		console.log('Transaction cancelled by user.');
-		return;
-	  }
-	} else if (adjustmentB > 0) {
-		if (adjustmentB > currBalanceBLamports) {
-			console.log(adjustmentB);
-			console.log(currBalanceBLamports);
-			console.log(
-				`You do not have enough ${selectedTokenB} to rebalance. There has been an error.
+            );
+            process.exit(0);
+        }
+        console.log(
+            `Need to trade ${chalk.cyan(adjustmentA / Math.pow(10, selectedDecimalsA))} ${chalk.cyan(selectedTokenA)} to ${chalk.magenta(selectedTokenB)} to balance.`
+        );
+        const userConfirmation = await confirmTransaction();
+        if (userConfirmation) {
+            const rebalanceTx = await rebalanceTokens(
+                selectedAddressA,
+                selectedAddressB,
+                adjustmentA,
+                rebalanceSlippageBPS,
+                quoteurl
+            );
+            return rebalanceTx;
+        } else {
+            console.log('Transaction cancelled by user.');
+            return;
+        }
+    } else if (adjustmentB > 0) {
+        if (adjustmentB > currBalanceBLamports) {
+            console.log(adjustmentB);
+            console.log(currBalanceBLamports);
+            console.log(
+                `You do not have enough ${selectedTokenB} to rebalance. There has been an error.
 Attempting to swap ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to ${chalk.cyan(selectedTokenA)}`
-			);
-			process.exit(0);
-		}
-	  console.log(
-		`Need to trade ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to ${chalk.cyan(selectedTokenA)} to balance.`
-	  );
-	  const userConfirmation = await confirmTransaction();
-	  if (userConfirmation) {
-		const rebalanceTx = await rebalanceTokens(
-		  selectedAddressB,
-		  selectedAddressA,
-		  adjustmentB,
-		  rebalanceSlippageBPS,
-		  quoteurl
-		);
-		return rebalanceTx;
-	  } else {
-		console.log('Transaction cancelled by user.');
-		return;
-	  }
-	}
+            );
+            process.exit(0);
+        }
+        console.log(
+            `Need to trade ${chalk.magenta(adjustmentB / Math.pow(10, selectedDecimalsB))} ${chalk.magenta(selectedTokenB)} to ${chalk.cyan(selectedTokenA)} to balance.`
+        );
+        const userConfirmation = await confirmTransaction();
+        if (userConfirmation) {
+            const rebalanceTx = await rebalanceTokens(
+                selectedAddressB,
+                selectedAddressA,
+                adjustmentB,
+                rebalanceSlippageBPS,
+                quoteurl
+            );
+            return rebalanceTx;
+        } else {
+            console.log('Transaction cancelled by user.');
+            return;
+        }
+    }
 }
 
 async function rebalanceTokens(
@@ -1257,13 +1772,31 @@ async function monitor() {
 async function updateMainDisplay() {
 	console.clear();
 	console.log(`Jupgrid v${packageInfo.version}`);
-	console.log(`\u{267E}  Infinity Mode`);
+	if (gridMode === "infinity grid") {
+	console.log(`\u{267E}  Infinity Grid`);
+	} else {
+	console.log(`\u{267B} Classic Grid`);
+	}
 	console.log(`\u{1F4B0} Wallet: ${displayAddress}`);
 	formatElapsedTime(startTime);
 	console.log(`-`);
+	if (gridMode === "infinity grid") {
 	console.log(
-	  `\u{1F527} Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)}\n\u{1F3AF} ${selectedTokenB} Target Value: $${infinityTarget}\n\u{1F6A8} Stop Loss at $${stopLossUSD}\n\u{2B65} Spread: ${spread}%\n\u{1F55A} Monitor Delay: ${monitorDelay}ms`
+	  `\u{1F527} Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)}
+\u{1F3AF} ${selectedTokenB} Target Value: $${infinityTarget}
+\u{1F6A8} Stop Loss at $${stopLossUSD}
+\u{2B65} Spread: ${spread}%
+\u{1F55A} Monitor Delay: ${monitorDelay}ms`
 	);
+} else {
+	console.log(
+		`\u{1F527} Settings: ${chalk.cyan(selectedTokenA)}/${chalk.magenta(selectedTokenB)}
+\u{1F3AF} Grid Order Size $${orderSize}
+\u{1F6A8} Stop Loss at $${stopLossUSD}
+\u{2B65} Spread: ${spread}%
+\u{1F55A} Monitor Delay: ${monitorDelay}ms`
+	  );
+	}
 	try {
 	const { newUSDBalanceA, newUSDBalanceB } = await fetchNewUSDValues();
 	currUSDBalanceA = newUSDBalanceA;
@@ -1303,7 +1836,7 @@ async function updateMainDisplay() {
 	sellPrice.pop();
 	iteration++;
 	var config = {
-		height:20,
+		height:15,
 		colors:[
 			asciichart.blue,
 			asciichart.green,
@@ -1352,7 +1885,11 @@ async function checkOpenOrders() {
 
 async function handleOrders(checkArray) {
 	if (checkArray.length !== 2) {
+		if (gridMode === "infinity grid") {
 		infinityGrid();
+		} else {
+		fixedDollarGrid();
+		}
 	} else {
 		console.log("2 open orders. Waiting for change.");
 		await delay(monitorDelay);

@@ -91,45 +91,49 @@ function envload() {
 }
 
 function saveuserSettings(
-	configVersion,
-	selectedTokenA,
-	selectedAddressA,
-	selectedDecimalsA,
-	selectedTokenB,
-	selectedAddressB,
-	selectedDecimalsB,
-	spread,
-	monitorDelay,
-	stopLossUSD,
-	maxJitoTip,
-	infinityTarget
+    configVersion,
+    selectedTokenA,
+    selectedAddressA,
+    selectedDecimalsA,
+    selectedTokenB,
+    selectedAddressB,
+    selectedDecimalsB,
+    spread,
+    monitorDelay,
+    stopLossUSD,
+    maxJitoTip,
+    gridMode,
+    infinityTarget,
+    orderSize
 ) {
-	try {
-		fs.writeFileSync(
-			"userSettings.json",
-			JSON.stringify(
-				{
-					configVersion,
-					selectedTokenA,
-					selectedAddressA,
-					selectedDecimalsA,
-					selectedTokenB,
-					selectedAddressB,
-					selectedDecimalsB,
-					spread,
-					monitorDelay,
-					stopLossUSD,
-					maxJitoTip,
-					infinityTarget
-				},
-				null,
-				4
-			)
-		);
-		console.log("\u{2714} User data saved successfully.");
-	} catch (error) {
-		console.error("Error saving user data:", error);
-	}
+    try {
+        fs.writeFileSync(
+            "userSettings.json",
+            JSON.stringify(
+                {
+                    configVersion,
+                    selectedTokenA,
+                    selectedAddressA,
+                    selectedDecimalsA,
+                    selectedTokenB,
+                    selectedAddressB,
+                    selectedDecimalsB,
+                    spread,
+                    monitorDelay,
+                    stopLossUSD,
+                    maxJitoTip,
+                    gridMode,
+                    infinityTarget,
+                    orderSize
+                },
+                null,
+                4
+            )
+        );
+        console.log("\u{2714} User data saved successfully.");
+    } catch (error) {
+        console.error("Error saving user data:", error);
+    }
 }
 
 function loaduserSettings() {
